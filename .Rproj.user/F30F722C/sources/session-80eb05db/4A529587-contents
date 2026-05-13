@@ -1,0 +1,42 @@
+---
+title: "Testing Phylogenetic Signal in Garderella Phenotypic Data"
+author: "Spencer Toth"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+  pdf_document: default
+---
+
+**Purpose:**
+  Analyze read count and ASVs across samples, specifically in comparison to controls (Chlor and Kit) with "zero" microbial signatures. 
+  
+**Overview**
+ 1. Curation of reads and ASVs https://benjjneb.github.io/FelineBileManuscript/Analyses/FelineBile_Curate.html  2. Perform decontam diagnostics to investigate core microbiome. 
+https://benjjneb.github.io/FelineBileManuscript/Analyses/FelineBile_Core.html  
+
+# Load R Packages
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+library(decontam); packageVersion("decontam")
+library(ggplot2); packageVersion("ggplot2")
+library(data.table)
+```
+
+
+# Input files 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+ASV_feature_table <- fread("/Users/spencertoth/Desktop/Research/dog_skin_microbiome/R_visualizations/input_csv_files/canine_skin_microbiome_filtered_nochim_asvs_names.csv", header=TRUE)
+
+sample_metadata <- read.delim("/Users/spencertoth/Desktop/Research/dog_skin_microbiome/CH-All_16S_Metadata_20220124.tsv", header=TRUE)
+
+rownames(ASV_feature_table) <- ASV_feature_table$V1
+rownames(sample_metadata) <- sample_metadata$SampleID
+
+# Confirm identical samples 
+identical(sort(rownames(sample_metadata)), sort(rownames(ASV_feature_table)))
+
+table(sample_metadata$Sample_Site, useNA="ifany")
+```
+
+

@@ -1,0 +1,64 @@
+library(dplyr)
+setwd("/Users/spencertoth/Desktop/Research/dog_skin_microbiome/R_visualizations")
+
+metadata <- read.delim("/Users/spencertoth/Desktop/Research/dog_skin_microbiome/R_visualizations/input_csv_files/CH-All_16S_Metadata_20220124.tsv")
+
+
+raw_and_filtered_read_count <- read.csv("/Users/spencertoth/Desktop/Research/dog_skin_microbiome/R_visualizations/input_csv_files/summary_read_counts/raw_trim_trunc_read_count.csv", header=TRUE)
+# remove extra rows keep first one to duplicate headers after cat csvs
+first_col_name <- colnames(raw_and_filtered_read_count)[1]
+raw_and_filtered_read_count <- raw_and_filtered_read_count[raw_and_filtered_read_count[[1]] != first_col_name, ]
+names(raw_and_filtered_read_count)[names(raw_and_filtered_read_count) == "Sample"] <- "sample"
+nrow(raw_and_filtered_read_count)
+
+raw_and_filtered_read_count <- raw_and_filtered_read_count %>%
+  mutate(sample = recode(sample,
+                         "1KitCtrl1" = "CH1KitCtrl1b",
+                         "Kit1" = "CH1KitCtrl1a",
+                         "3KitCtrl1" = "CH3KitCtrl1",
+                         "2KitCtrl1" = "CH2KitCtrl1b",
+                         "Kit2" = "CH2KitCtrl1a",
+                         "2KitCtrl2" = "CH2KitCtrl2",
+                         "4KitCtrl"  = "CH4KitCtrl",
+                         "5KitCtrl"  = "CH5KitCtrla",
+                         "5bKitCtrl" = "CH5KitCtrlb",
+                         "6KitCtrl"  = "CH6KitCtrl",
+                         "Chlor1"    = "Chlor1a",
+                         "Chlor1b"   = "Chlor1b",
+                         "Chlor2"    = "Chlor2a",
+                         "Chlor2b"   = "Chlor2b",
+                         "Chlor3"    = "Chlor3a",
+                         "Chlor3b"   = "Chlor3b",
+                         "12Chlor" = "12D0Chlor"
+  ))
+
+denoised_read_count <- read.csv("input_csv_files/canine_skin_microbiome_all_asvs_sample_totals.csv", header=TRUE)
+# Rename 'total_reads' to 'denoised_reads'
+names(denoised_read_count)[names(denoised_read_count) == "total_reads"] <- "denoised_reads"
+# in sample column of denoised_read_count find the name in the column SampleID of metadata and replace it with the corresponding name in Sample_Unique column 
+denoised_read_count$sample <- metadata$Sample_Unique[match(denoised_read_count$sample, metadata$SampleID)]
+nrow(denoised_read_count)
+
+
+chimera_removal_read_count <- read.csv("input_csv_files/canine_skin_microbiome_filtered_nochim_sample_totals.csv", header=TRUE)
+# Rename 'total_reads' to 'chimeras_removed_reads'
+names(chimera_removal_read_count)[names(chimera_removal_read_count) == "total_reads"] <- "chimeras_removed_reads"
+nrow(chimera_removal_read_count)
+chimera_removal_read_count$sample <- metadata$Sample_Unique[match(chimera_removal_read_count$sample, metadata$SampleID)]
+
+missing_samples <- setdiff(chimera_removal_read_count$sample, denoised_read_count$sample)
+missing_samples
+# Left Join: Keeps ALL samples from raw_and_filtered, even if missing in denoised
+merged_df <- merge(chimera_removal_read_count, denoised_read_count, by = "sample", all.x = TRUE)
+nrow(merged_df)
+
+missing_samples <- setdiff(merged_df$sample, raw_and_filtered_read_count$sample)
+missing_samples
+
+# Left Join: Keeps ALL samples from raw_and_filtered, even if missing in denoised
+merged_final_df <- merge(merged_df, raw_and_filtered_read_count, by = "sample", all.x = TRUE)
+nrow(merged_final_df)
+
+merged_final_df <- merged_final_df %>%
+  relocate(sample, Raw_Sum, Trimmed_Sum, Trunc_Sum, denoised_reads, chimeras_removed_reads)
+write.csv(merged_final_df, "/Users/spencertoth/Desktop/Research/dog_skin_microbiome/R_visualizations/input_csv_files/final_summary_read_counts.csv", row.names = TRUE)

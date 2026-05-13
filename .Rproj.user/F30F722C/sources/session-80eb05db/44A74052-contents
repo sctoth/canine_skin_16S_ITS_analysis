@@ -1,0 +1,56 @@
+library(data.table)
+
+infile <- "/Users/spencertoth/Desktop/Research/dog_skin_microbiome/16S_ASVs/canine_skin_microbiome_all_asvs.csv"
+outdir <- "/Users/spencertoth/Desktop/Research/dog_skin_microbiome/16S_ASVs"
+filtered_infile <-"/Users/spencertoth/Desktop/Research/dog_skin_microbiome/16S_ASVs/canine_skin_microbiome_filtered_nochim_asvs.csv"
+# Read row 1 as the sequence row
+seq_row <- fread(infile, nrows = 1, showProgress = FALSE)
+cols_to_rename <- colnames(seq_row[, -1])
+# Extract ASV sequences from columns 2:end
+asv_seq <- as.character(unlist(cols_to_rename, use.names = FALSE))
+asv_names <- paste0("ASV_", seq_along(asv_seq))
+
+# Make mapping table
+asv_map <- data.table(
+  asv_id = asv_names,
+  sequence = asv_seq
+)
+fwrite(asv_map, file.path(outdir, "asv_sequences.csv"))
+
+# Read the rest of the file, skipping row 1
+df <- fread(infile, skip = 1, header = FALSE, showProgress = FALSE)
+
+# Rename ASV columns
+setnames(df, old = names(df)[-1], new = asv_names)
+
+# Write renamed table
+fwrite(df, file.path(outdir, "canine_skin_microbiome_all_asvs_names.csv"))
+
+# Sample totals
+sample_totals <- data.table(
+  sample = df[[1]],
+  total_reads = rowSums(df[, -1, with = FALSE], na.rm = TRUE)
+)
+fwrite(sample_totals, file.path(outdir, "canine_skin_microbiome_all_asvs_sample_totals.csv"))
+
+###### Process chimera-removed feature table
+# Filtered ASV table rows=samples, Columns=ASVs 
+filtered_df <- fread(filtered_infile, showProgress = FALSE)
+
+# Identify cols to rename (excluding the first column because its the sample IDs)
+cols_to_rename <- colnames(filtered_df[, -1])
+
+# This finds the position of filtered_df col in the map
+map_idx <- match(cols_to_rename, asv_map$sequence)
+
+# 3. Create a vector of new names 
+new_names <- asv_map$asv_id[map_idx]
+
+# 4. Perform renaming
+data.table::setnames(filtered_df, old = cols_to_rename, new = new_names)
+fwrite(filtered_df, file.path(outdir, "canine_skin_microbiome_filtered_nochim_asvs_names.csv"))
+
+filtered_totals <- filtered_df[, .(total_reads = rowSums(.SD, na.rm = TRUE)), .SDcols = names(filtered_df)[-1]]
+filtered_totals[, sample := filtered_df[[1]]]
+setcolorder(filtered_totals, c("sample", "total_reads"))
+fwrite(filtered_totals, file.path(outdir, "canine_skin_microbiome_filtered_nochim_sample_totals.csv"))
