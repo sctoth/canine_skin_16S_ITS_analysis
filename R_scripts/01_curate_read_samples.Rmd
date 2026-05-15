@@ -59,16 +59,16 @@ if(!identical(sort(rownames(sample_metadata)), sort(rownames(ASV_feature_table))
 ASV_feature_table_subset1 <- ASV_feature_table %>% 
   filter(V1 %in% rownames(sample_metadata))
 sample_metadata$LibrarySize <- rowSums(ASV_feature_table_subset1[, -1])
-ggplot(data=sample_metadata, aes(x=rank(LibrarySize), y=LibrarySize, color=Sample_Site)) +   geom_point(size = 1) +  # Standard scatter plot points
+ggplot(data=sample_metadata, aes(x=rank(LibrarySize), y=LibrarySize, color=Sample_Site)) +   geom_point(size = 0.5) +  # Standard scatter plot points
   scale_color_manual(values = c(
     "Air"       = "red",
-    "Chlorhex"  = "red",
-    "Kit"       = "red",
+    "Chlorhex"  = "orange",
+    "Kit"       = "green",
     "Surgical"  = "blue",
     "Control"   = "blue"
   ))
 
-sort(sample_metadata$LibrarySize)[1:50]
+sort(sample_metadata$LibrarySize)[1:30]
 table(sample_metadata$Sample_Site, sample_metadata$NegativeControl)
 ```
 
@@ -85,6 +85,46 @@ ASV_feature_table_subset <- ASV_feature_table_subset1 %>%
 
 cat("original")
 table(sample_metadata$Sample_Site, sample_metadata$NegativeControl)
+
 cat("\nRemoved samples < 9000 reads")
 table(sample_metadata_subset$Sample_Site, sample_metadata_subset$NegativeControl)
+
+```
+# Curate Read Samples: Use the distribution of ASV prevalences and abundances to guide feature-wise pre-filtering
+## Inspect the distribution of ASV prevalences 
+### Observation: Large number of ASVs appear in 1 or fewer samples, and then another drop off around 6 or fewer samples
+### 504 ASVs are not assigned to any samples because they are from samples that were removed after filtering though with <9k reads
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+# Rows=samples, Columns=ASVs 
+# For each ASV sum the number of rows (samples) with TRUE = # reads > 0 
+# the table shows the number of unique ASVs found in a given number of samples (0-471)
+
+table(colSums(ASV_feature_table_subset>0))
+```
+
+## Create a data.frame with rows for each ASV, and columns for prevalence and abundance across all samples, and only in positive samples
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+df.asv <- data.frame(Sequence=colnames(ASV_feature_table_subset[, -1]), 
+                     Prevalence=colSums((ASV_feature_table_subset[, -1])>0), # number of samples with each ASV (prevalence)
+                     Prevalence.Pos=colSums(((ASV_feature_table_subset)[!sample_metadata_subset$NegativeControl,]>0)[, -1]),
+                     Abundance=colSums((ASV_feature_table_subset[, -1])), # number of reads for each ASV (abundance)
+                     Abundance.Pos=colSums(((ASV_feature_table_subset)[!sample_metadata_subset$NegativeControl,])[, -1]))
+```
+
+### Observation: Small number of *high abundance, low prevalence ASVs* in both full dataset and no negative-controls dataset 
+### If we were to find ASVs with a high number of reads across a small number of samples we would implement prevalence method by removing ASVs based on those found in negative-controls and positive samples. However because we do not observe this we have to rely on a read count threshold to filter our positive samples because we cannot rely on ASVs found in negatives and positives to be contaminants. 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+ggplot(data=df.asv, aes(x=Prevalence, y=Abundance)) + geom_point(size = 0.5) + scale_y_log10()+ ggtitle("Full Dataset (with negative controls)")
+
+
+ggplot(data=df.asv, aes(x=Prevalence.Pos, y=Abundance.Pos)) + geom_point(size = 0.5) + scale_y_log10() + ggtitle("Positive Samples")
+
+```
+
+## Implement prevalence threshold 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+ASV_feature_table_subset.filt <- (ASV_feature_table_subset[,df.asv$Prevalence.Pos >= 50])
+ncol(ASV_feature_table_subset.filt[, -1]); ncol(ASV_feature_table_subset[, -1]); ncol(ASV_feature_table_subset.filt[, -1])/ncol(ASV_feature_table_subset[, -1])
+
+sum(ASV_feature_table_subset.filt[, -1])/sum(ASV_feature_table_subset[, -1])
 ```
