@@ -1,2 +1,5 @@
 input_csv_files/
 .Rproj.user
+.RData
+.Rhistory
+*.Rproj
