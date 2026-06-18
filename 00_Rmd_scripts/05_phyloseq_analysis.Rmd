@@ -1,0 +1,422 @@
+---
+title: "Canine Skin Microbiome: Microbial Diversity Analysis "
+author: "Spencer Toth"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+  pdf_document: default
+---
+
+**Purpose:**
+Analyze microbial diversity within and across timepoints, comparing control and surgical skin sites. 
+    
+# Load R Packages
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+library("knitr")
+library("FSA")
+library("tidyverse")
+library("vegan")
+library("phyloseq")
+library("ggplot2")
+library("ggtree")
+library("scales") # Crucial for label_comma() and log_breaks() to work
+library(RColorBrewer)
+set.seed(100)
+```
+
+# Create phyloseq objects
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+load("/Users/spencertoth/Desktop/Research/canine_skin_project/R_visualizations/R_scripts/CH1_filtered_canine_skin_microbiome.rda")
+
+ps1 <- phyloseq(otu_table(ASV_feature_table_decontam, taxa_are_rows=FALSE), 
+               sample_data(sample_metadata_decontam), 
+               tax_table(taxa_annotations_decontam))
+ ps1 <- prune_samples(
+  grepl("Skin", sample_data(ps1)$Location_Type),
+  ps1
+)
+load("/Users/spencertoth/Desktop/Research/canine_skin_project/R_visualizations/R_scripts/CH2_filtered_canine_skin_microbiome.rda")
+
+ps2 <- phyloseq(otu_table(ASV_feature_table_decontam, taxa_are_rows=FALSE), 
+               sample_data(sample_metadata_decontam), 
+               tax_table(taxa_annotations_decontam))
+ ps2 <- prune_samples(
+  grepl("Skin", sample_data(ps2)$Location_Type),
+  ps2
+)
+load("/Users/spencertoth/Desktop/Research/canine_skin_project/R_visualizations/R_scripts/CH3_filtered_canine_skin_microbiome.rda")
+
+ps3 <- phyloseq(otu_table(ASV_feature_table_decontam, taxa_are_rows=FALSE), 
+               sample_data(sample_metadata_decontam), 
+               tax_table(taxa_annotations_decontam))
+ ps3 <- prune_samples(
+  grepl("Skin", sample_data(ps3)$Location_Type),
+  ps3
+)
+load("/Users/spencertoth/Desktop/Research/canine_skin_project/R_visualizations/R_scripts/CH4_filtered_canine_skin_microbiome.rda")
+
+ps4 <- phyloseq(otu_table(ASV_feature_table_decontam, taxa_are_rows=FALSE), 
+               sample_data(sample_metadata_decontam), 
+               tax_table(taxa_annotations_decontam))
+  ps4 <- prune_samples(
+  grepl("Skin", sample_data(ps4)$Location_Type),
+  ps4
+)
+ps <- merge_phyloseq(ps1, ps2, ps3, ps4)
+ps <- prune_samples(
+  grepl("Skin", sample_data(ps)$Location_Type),
+  ps
+)
+#ps <- subset_taxa(ps, !is.na(Phylum) & !Phylum %in% c("", "uncharacterized"))
+
+ps_rel <- transform_sample_counts(ps, function(x) x / sum(x))
+```
+
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+ps_list <- list(ps1, ps2, ps3, ps4)
+run_names <- paste0("CH", 1:4)
+
+out_dir <- "/Users/spencertoth/Desktop/Research/canine_skin_project/R_visualizations/R_scripts"
+
+# Aggregate reads and ASVs per Individual within each run
+ind_stats <- do.call(rbind, lapply(seq_along(ps_list), function(i) {
+  ps <- ps_list[[i]]
+  
+  reads_per_sample <- sample_sums(ps)
+  md <- as(sample_data(ps), "data.frame")
+  sample_names_ps <- sample_names(ps)
+  
+  if (!all(sample_names_ps == rownames(md))) {
+    md <- md[sample_names_ps, ]
+  }
+  
+  df <- data.frame(
+    sample = sample_names_ps,
+    total_reads = reads_per_sample,
+    Individual = md$Individual,
+    stringsAsFactors = FALSE
+  )
+  
+  otu <- otu_table(ps)
+  if (taxa_are_rows(otu)) {
+    df$total_asv <- colSums(otu > 0)
+  } else {
+    df$total_asv <- rowSums(otu > 0)
+  }
+  
+  # Sum reads and ASVs per Individual
+  by_ind <- aggregate(
+    cbind(total_reads, total_asv) ~ Individual,
+    data = df,
+    FUN = sum
+  )
+  
+  data.frame(
+    sequencing_run = run_names[i],
+    Individual = by_ind$Individual,
+    total_reads = by_ind$total_reads,
+    total_asv = by_ind$total_asv,
+    stringsAsFactors = FALSE
+  )
+}))
+
+# Boxplot for total reads by sequencing run
+p_reads <- ggplot(ind_stats, aes(x = sequencing_run, y = total_reads, fill=sequencing_run)) +
+  geom_boxplot() +
+  scale_y_continuous(
+    labels = function(x) paste0(x / 1000, "K"),
+    name = "Total Reads (per Individual, in thousands)"
+  ) +
+  labs(
+    title = "Total Reads per Individual by Sequencing Run",
+    x = "Sequencing Run"
+  ) +
+  theme_minimal()
+
+out_reads <- paste0(out_dir, "/total_reads_by_sequencing_run.png")
+ggplot2::ggsave(out_reads, p_reads, width = 8, height = 6)
+
+# Boxplot for total ASVs by sequencing run (y-axis in thousands)
+p_asv <- ggplot(ind_stats, aes(x = sequencing_run, y = total_asv,  fill=sequencing_run)) +
+  geom_boxplot() +
+  scale_y_continuous(
+    labels = function(x) paste0(x / 1000, "K"),
+    name = "Total ASVs (per Individual, in thousands)"
+  ) +
+  labs(
+    title = "Total ASVs per Individual by Sequencing Run",
+    x = "Sequencing Run"
+  ) +
+  theme_minimal()
+
+out_asv <- paste0(out_dir, "/total_asvs_by_sequencing_run.png")
+ggplot2::ggsave(out_asv, p_asv, width = 8, height = 6)
+ 
+
+```
+# Beta-diversity: Bray-Curtis Distance Matrix, PCoA, PERMANOVA
+
+## Check for sequencing run batch-effects
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+# Calculate bray-curtis distance matrix on samples using ASV relative abundances
+metadata <- data.frame(sample_data(ps_rel))
+bray_dist <- phyloseq::distance(ps_rel, method = "bray")
+# generate PCoA using the sample distance matrix
+bray_pcoa <- ordinate(physeq = ps_rel, method = "PCoA", distance = bray_dist)
+
+print("How different are the centroids of the clusters formed by samples within the same sequencing run?")
+# Color samples by Sequencing Run
+p1 <- plot_ordination(ps_rel, bray_pcoa, color = "Sample_Plate")
+p1 + ggtitle("PCoA of Beta-Diversity (Bray-Curtis)") +
+  geom_point(size = 1.5) + 
+  theme_bw() +
+  stat_ellipse(aes(fill = Sample_Plate, group = Sample_Plate), alpha = 0.2, geom = "polygon")
+# PERMANOVA test for significant differences amongst sequencing runs 
+adonis2(bray_distance ~ Sample_Plate, data = metadata, permutations = 999)
+
+
+print("Within a cluster what is the average distance to the centroid?")
+# Distance of each 16S sample to its sequencing batch centroid 
+# Method = PERMDISP2 (multivariate analogue of Levene's test)
+betadisper_result <- betadisper(bray_dist, group = metadata$Sample_Plate)
+
+# Extract the PCoA coordinates and centroids
+df_points <- as.data.frame(scores(betadisper_result, display = "sites"))
+df_points$Sample_Plate <- metadata$Sample_Plate
+
+df_centroids <- as.data.frame(scores(betadisper_result, display = "centroids"))
+df_centroids$Sample_Plate <- rownames(df_centroids)
+
+ggplot(df_points, aes(x = PCoA1, y = PCoA2, color = Sample_Plate)) +
+  geom_segment(data = merge(df_points, df_centroids, by = "Sample_Plate", suffixes = c("", ".cen")),
+               aes(xend = PCoA1.cen, yend = PCoA2.cen), alpha = 0.5) +
+  geom_point(size = 2) +
+  geom_point(data = df_centroids, size = 5, shape = 17) + 
+  stat_ellipse(aes(fill = Sample_Plate, group = Sample_Plate), alpha = 0.1, geom = "polygon", color = NA) +
+  ggtitle("PCoA of Beta-Diversity (Bray-Curtis) with Centroids") +
+  theme_bw()
+
+
+average_by_plate <- data.frame(
+  Plate = metadata$Sample_Plate,
+  Dist_to_Centroid = betadisper_result$distances
+)
+
+average_by_plate_table <- average_by_plate %>%
+  group_by(Plate) %>%
+  summarize(
+    Mean_Dist = mean(Dist_to_Centroid, na.rm = TRUE),
+    SD_Dist   = sd(Dist_to_Centroid, na.rm = TRUE),
+    CV_Percent = (SD_Dist / Mean_Dist *100) 
+  )
+
+print(average_by_plate_table)
+
+# Permutation test for significance
+permutest(betadisper_result, permutations = 999)
+
+# SEq Run Pairwise Post-hoc comparisons
+TukeyHSD(betadisper_result)
+```
+
+### Merge rooted tree to phyloseq object  
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+# Unifrac distance matrix 
+# Create random tree matching the taxa names
+random_tree <- rtree(ntaxa(ps_rel), rooted = TRUE, tip.label = taxa_names(ps))
+plot(random_tree)
+
+# Merge tree into the phyloseq object
+ps_2 <- merge_phyloseq(ps_rel, random_tree)
+ps_2
+
+# Calculate weighted UniFrac distance matrix 
+dist_unifrac_2 <- phyloseq::distance(ps_2, method = "wunifrac")
+distance_bray_curtis <- phyloseq::distance(ps_rel, method = "bray")
+
+# Run PCoA using the distance matrix
+uni_2 <- ordinate(physeq = ps_2, method = "PCoA", distance = dist_unifrac_2)
+bray_1 <- ordinate(physeq = ps_rel, method = "PCoA", distance = distance_bray_curtis)
+```
+
+
+## Second Check for differences between Control and Surgical Sites 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+p1 <- plot_ordination(ps_2, uni_2, color = "Sample_Site")
+p1 + 
+  geom_point(size = 1.5) + 
+  theme_bw() + 
+  scale_color_manual(values = c("Control" = "purple", "Surgical" = "blue"))
+sam_2 <- data.frame(sample_data(ps_2))
+adonis2(dist_unifrac_2 ~ Day_Order + Individual + Day_Order:Individual, data = sam_2, permutations = 999)
+```
+
+# Alpha-diversity 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+# 1. Filter and prepare the alpha diversity data frame
+alphadiv_plot_data <- estimate_richness(ps_rel, measures = "Shannon") %>% 
+  rownames_to_column(var = "SampleID") %>% 
+  left_join(as.data.frame(sample_data(ps_rel)), by = "SampleID")
+
+# 2. Generate the faceted dot plot for each individual dog
+ggplot(alphadiv_plot_data, aes(x = factor(Day_Order), y = Shannon, color = Sample_Site, group = Individual)) +
+  geom_point(size = 1) +
+  geom_line() + # Optional: connects the dots chronologically for each dog
+  facet_wrap(~ Individual) + 
+  scale_color_manual(values = c("Control" = "purple", "Surgical" = "blue")) + 
+  theme_bw() + 
+  labs(
+    title = "Shannon Diversity Across Timepoints per Dog", 
+    x = "Timepoint (Day Order)", 
+    y = "Shannon Index",
+    color = "Sample Site"
+  ) +
+  theme(axis.text.x = element_text(angle = 90))
+
+# 2. Plot Shannon index ONLY (Observed richness will not work on relative abundance)
+plot_richness(ps_rel, 
+              x = "Day_Order", 
+              measures = "Shannon") + 
+  geom_boxplot(aes(fill = Sample_Site), show.legend = TRUE) +
+  facet_grid(. ~ Sample_Site) + # Adjusted facet since there is only 1 metric now
+  scale_fill_manual(values = c("Control" = "purple", "Surgical" = "blue")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  labs(title = "Shannon Diversity (Relative Abundance)",
+       x = "Timepoint",
+       fill = "Sample Site")
+
+# Alpha diversity across timepoints for the Control Groups 
+alphadiv <- estimate_richness(ps_rel, measures = c("Shannon")) %>%
+  rownames_to_column(var = "SampleID") %>%
+  left_join(as.data.frame(sample_data(ps_rel)), by = "SampleID")  %>% 
+  filter(Sample_Site == "Control")  
+
+kruskal.test(Shannon ~ Day_Order, data = alphadiv)
+ 
+dunnS <- dunnTest(Shannon ~ Day_Order,
+                  data=alphadiv,
+                  method="bh")
+ dunnS
+ 
+# Alpha diversity across timepoints for the Surgery Groups 
+alphadiv <- estimate_richness(ps_rel, measures = c("Shannon")) %>%
+  rownames_to_column(var = "SampleID") %>%
+  left_join(as.data.frame(sample_data(ps_rel)), by = "SampleID")  %>% 
+  filter(Sample_Site == "Surgical") 
+
+kruskal.test(Shannon ~ Day_Order, data = alphadiv)
+ 
+dunnS <- dunnTest(Shannon ~ Day_Order,
+                  data=alphadiv,
+                  method="bh")
+ dunnS
+ 
+```
+
+## Relative Abundance (surgical site)
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+ps_rel_surgical <- subset_samples(ps_rel, Sample_Site == "Surgical")
+
+# 2. Get a unique list of all individuals in your dataset
+individual_list <- unique(sample_data(ps_rel_surgical)$Individual)
+
+# Get all phyla in your object (no Other here)
+all_phyla <- tax_table(ps_rel_surgical)[, "Phylum"] %>%
+  as.vector() %>% 
+  unique() %>%
+  sort()
+
+# Choose colors (expand palette if needed)
+n_phyla <- length(all_phyla)  
+base_cols <- brewer.pal(min(n_phyla, 12), "Paired")
+phylum_cols_vec <- colorRampPalette(base_cols)(n_phyla)
+
+# Named palette for real phyla (no Other)
+phylum_levels <- all_phyla
+phylum_colors <- setNames(phylum_cols_vec, phylum_levels)
+
+for (ind in individual_list) {
+  
+  ps_sub <- subset_samples(ps_rel_surgical, Individual == ind)
+  
+  plot_df <- psmelt(ps_sub) %>%
+    group_by(Day_Order, Phylum) %>%
+    summarise(Abundance = sum(Abundance), .groups = "drop")
+  
+  # top 20 Phylum within this individual
+  top20_ind <- plot_df %>%
+    group_by(Phylum) %>%
+    summarise(Total_Abundance = sum(Abundance), .groups = "drop") %>%
+    arrange(desc(Total_Abundance)) %>%
+    slice_head(n = 20) %>%
+    pull(Phylum)
+  
+  # collapse others into "Other"
+  phylum_levels_ind <- c(top20_ind, "Other")
+  
+  plot_df <- plot_df %>%
+    mutate(
+      Phylum = ifelse(Phylum %in% top20_ind, Phylum, "Other"),
+      Phylum = factor(Phylum, levels = phylum_levels_ind)
+    )
+  
+  # colors for this individual: top20 from global palette + "Other" as gray
+  values_ind <- c(
+    phylum_colors[top20_ind],    # named vector for the top20
+    "Other" = "grey70"           # force Other to gray
+  )
+  
+  p <- ggplot(plot_df, aes(x = Day_Order, y = Abundance, fill = Phylum)) +
+    geom_col() +
+    scale_fill_manual(
+      values = values_ind,
+      breaks = phylum_levels_ind,   # legend order = top20 then Other
+      na.value = "black"            # if any NA in Phylum, show as black
+    ) +
+    labs(title = paste0("Top 20 Phyla Across Timepoints for Dog: ", ind))
+  
+  print(p)
+}
+
+```
+
+## Examine Differences between: Individuals, Surgery-Type, and Timepoints
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+# Remove Control samples  
+ps_3 <- subset_samples(ps_2, !grepl("Control", Sample_Site))
+ps_3 <- prune_taxa(taxa_sums(ps_3) > 0, ps_3)
+
+# Calculate new UniFrac distance for subsetted data
+dist_unifrac_3 <- phyloseq::distance(ps_3, method = "unifrac")
+uni_3 <- ordinate(physeq = ps_3, method = "PCoA", distance = dist_unifrac_3)
+
+# Plot by Individual
+p3 <- plot_ordination(ps_3, uni_3, color = "Individual")
+p3 + geom_point(size = 1.5) + theme_bw()
+sam_2 <- data.frame(sample_data(ps_2))
+adonis2(dist_unifrac_2 ~ Day_Order + Individual + Day_Order:Individual, data = sam_2, permutations = 999)
+
+
+# Plot by Surgery_Type
+p2 <- plot_ordination(ps_3, uni_3, color = "Surgery_Type")
+p2 + 
+  geom_point(size = 1.5) + 
+  theme_bw() + 
+  scale_color_manual(values = c("Abdomen" = "orange", "Stifle" = "pink"))
+sam_2 <- data.frame(sample_data(ps_2))
+adonis2(dist_unifrac_2 ~ Day_Order + Individual + Day_Order:Individual, data = sam_2, permutations = 999)
+
+# Plot by Day_Order
+p4 <- plot_ordination(ps_3, uni_3, color = "Day_Order")
+p4 + geom_point(size = 1.5) + theme_bw()
+sam_2 <- data.frame(sample_data(ps_2))
+adonis2(dist_unifrac_2 ~ Day_Order + Individual + Day_Order:Individual, data = sam_2, permutations = 999)
+```
+ 
+
+```{r, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
+sessionInfo()
+```
