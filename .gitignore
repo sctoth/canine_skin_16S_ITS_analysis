@@ -3,3 +3,9 @@ input_csv_files/
 .RData
 .Rhistory
 *.Rproj
+R_proj_files/
+
+# R workspace files
+.RData
+.Rhistory
+.Rproj.user/
