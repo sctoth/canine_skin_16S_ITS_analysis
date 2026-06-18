@@ -31,26 +31,26 @@ library(phangorn)
 ```
 # Select which sequencing library to process 
 ```{r, message=FALSE, warning=FALSE, echo=TRUE}
-prefix <- "CH2"
+prefix <- "CH4"
 ```
 
 # Input files 
 ```{r, message=FALSE, warning=FALSE, echo=TRUE}
 
 # Chimeras removed dada2 ASV feature table 
-ASV_feature_table_og <- readRDS("/Users/spencertoth/Desktop/Research/canine_skin_project/R_visualizations/input_csv_files/ASV_tables/04_final_pool_truncR150_maxE22/canine_skin_microbiome_filtered_nochim_asvs.rds")
+ASV_feature_table_og <- readRDS("../01_input_files/dada2_results/canine_skin_microbiome_filtered_nochim_asvs.rds")
 # Remove rows where row names contain "Air"
 ASV_feature_table_og <- ASV_feature_table_og[!grepl("Air", rownames(ASV_feature_table_og)), , drop = FALSE]
 
 # Full metadata 
-sample_metadata_og <- read.delim("/Users/spencertoth/Desktop/Research/canine_skin_project/R_visualizations/input_csv_files/metadata/CH-All_16S_Metadata_20220124.tsv", header=TRUE)
+sample_metadata_og <- read.delim("../01_input_files/metadata/CH-All_Metadata_20220124.tsv", header=TRUE)
 # rownames = Samples
 rownames(sample_metadata_og) <- sample_metadata_og$SampleID
 nrow(sample_metadata_og)
 sample_metadata_og <- sample_metadata_og[!grepl("Air", sample_metadata_og$SampleID), , drop = FALSE]
 nrow(sample_metadata_og)
 # ASV sequences annotated 
-taxa_annotations_og <- readRDS("/Users/spencertoth/Desktop/Research/canine_skin_project/R_visualizations/input_csv_files/ASV_tables/04_final_pool_truncR150_maxE22/canine_skin_microbiome_filtered_nochim_asvs_taxa.rds")
+taxa_annotations_og <- readRDS("../01_input_files/dada2_results/canine_skin_microbiome_filtered_nochim_asvs_taxa.rds")
 
 # Check to ensure feature table and taxa have identical sequences 
 if(!identical(getSequences(taxa_annotations_og), getSequences(ASV_feature_table_og))) stop("Table mismatch: taxa_annotations, ASV_feature_table")
@@ -62,7 +62,7 @@ table(sample_metadata_og$Sample_Site, useNA="ifany")
 
 # Input each individual sequencing library DNA concentration for pooling (prior to diluting for sequencing prep)
 
-sample_DNA_library_CH1_clean <- read.csv("/Users/spencertoth/Desktop/Research/canine_skin_project/R_visualizations/input_csv_files/metadata/CH1-4_PoolCalcs_CH1.csv") %>% 
+sample_DNA_library_CH1_clean <- read.csv("../01_input_files/metadata/PoolCalcs_CH1.csv") %>% 
   filter(!stringr::str_detect(Sample, "Air")) %>%
   filter(!is.na(Well) & Well != "") %>% 
   filter(!is.na(Primer) & Primer == "16S") %>% 
@@ -76,7 +76,7 @@ sample_DNA_library_CH1_clean <- read.csv("/Users/spencertoth/Desktop/Research/ca
   select(Sample, raw_DNA_conc, pooled_DNA_conc) %>% 
   distinct(Sample, .keep_all = TRUE)
 
-sample_DNA_library_CH2_clean <- read.csv("/Users/spencertoth/Desktop/Research/canine_skin_project/R_visualizations/input_csv_files/metadata/CH1-4_PoolCalcs_CH2.csv") %>% 
+sample_DNA_library_CH2_clean <- read.csv("../01_input_files/metadata/PoolCalcs_CH2.csv") %>% 
   mutate(Sample = case_match(
     Sample,
     "Chlor1-16S" ~ "Chlor1b-16S",
@@ -97,7 +97,7 @@ sample_DNA_library_CH2_clean <- read.csv("/Users/spencertoth/Desktop/Research/ca
   select(Sample, raw_DNA_conc, pooled_DNA_conc) %>% 
   distinct(Sample, .keep_all = TRUE)
 
-sample_DNA_library_CH3_clean <- read.csv("/Users/spencertoth/Desktop/Research/canine_skin_project/R_visualizations/input_csv_files/metadata/CH1-4_PoolCalcs_CH3.csv") %>% 
+sample_DNA_library_CH3_clean <- read.csv("../01_input_files/metadata/PoolCalcs_CH3.csv") %>% 
   filter(!is.na(Well) & Well != "") %>% 
   filter(!is.na(Primer) & Primer == "16S") %>% 
   filter(!stringr::str_detect(Sample, "Air")) %>%
@@ -111,7 +111,7 @@ sample_DNA_library_CH3_clean <- read.csv("/Users/spencertoth/Desktop/Research/ca
   select(Sample, raw_DNA_conc, pooled_DNA_conc) %>% 
   distinct(Sample, .keep_all = TRUE)
 
-sample_DNA_library_CH4_clean <- read.csv("/Users/spencertoth/Desktop/Research/canine_skin_project/R_visualizations/input_csv_files/metadata/CH1-4_PoolCalcs_CH4.csv") %>% 
+sample_DNA_library_CH4_clean <- read.csv("../01_input_files/metadata/PoolCalcs_CH4.csv") %>% 
   mutate(Sample = case_match(
     Sample,
     "CH5 Kit Ctrl 16S" ~ "CH5b-Kit-Ctrl-16S",
@@ -354,7 +354,7 @@ table(sample_metadata.filt$Sample_Site[sample_metadata.filt$LibrarySize < 2000],
 # Run Decontam Diagnostics: Combined Method
 ```{r, message=FALSE, warning=FALSE, echo=TRUE}
 set.seed(100)
-contam <- isContaminant(ASV_feature_table.filt, conc=sample_metadata.filt$raw_DNA_conc, neg=sample_metadata.filt$NegativeControl, method="combined", threshold = 0.5)
+contam <- isContaminant(ASV_feature_table.filt, conc=sample_metadata.filt$raw_DNA_conc, neg=sample_metadata.filt$NegativeControl, method="combined", threshold = 0.25)
 asv_names <- colnames(ASV_feature_table.filt)
 contam$ASV       <- asv_names   
 contam$Phylum <- taxa_annotations.filt[,"Phylum"]
@@ -376,7 +376,7 @@ histo + facet_wrap(~Prevalence)
 i.top10 <- order(contam$p, decreasing=FALSE)[1:10]
 contam[i.top10,]
 
-cat("Number of contaminants (method = combined, threshold = 0.5):", sum(contam$contaminant))
+cat("Number of contaminants (method = combined, threshold = 0.25):", sum(contam$contaminant))
 
 
 
@@ -499,11 +499,11 @@ kable(
 
  
 save(ASV_feature_table_decontam, taxa_annotations_decontam, sample_metadata_decontam, 
-     file = paste0("/Users/spencertoth/Desktop/Research/canine_skin_project/R_visualizations/R_scripts/", prefix, "_filtered_canine_skin_microbiome.rda"))
+     file = paste0("../02_output_files/01_filtered_ASV_tables/", prefix, "_filtered_canine_skin_microbiome.rda"))
 
  
 saveRDS(ps_decontam_no_neg, 
-        file = paste0("/Users/spencertoth/Desktop/Research/canine_skin_project/R_visualizations/R_scripts/", prefix, "_ASV_feature_table_decontam.rds"))
+        file = paste0("../02_output_files/01_filtered_ASV_tables/", prefix, "_ASV_feature_table_decontam.rds"))
 
 ```
 
