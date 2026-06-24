@@ -27,6 +27,10 @@ library(RColorBrewer)
 library(segmented)
 library(stringr)
 library(pairwiseAdonis)
+library(ggpubr)
+library(changepoint)
+library(dplyr)
+library(lme4)
 ```
 
 ## Create phyloseq objects
@@ -123,7 +127,7 @@ print(out)
 ps_1 <- subset_taxa(ps, !is.na(Phylum) & !Phylum %in% c("", "uncharacterized"))
 ```
 
-### Check for low-prevalent taxa
+### Check for low-prevalence taxa
 ```{r, fig.width=11, fig.height=8}
 # Compute prevalence for each ASV 
 prevdf = apply(X = otu_table(ps_1),
@@ -145,10 +149,8 @@ colnames(phylum_summary) <- c("Phylum", "Mean_Prevalence", "Sum_Prevalence")
 # Phyla by Total ASV Prevalence 
 phylum_summary_sorted <- phylum_summary[order(-phylum_summary$Sum_Prevalence), ]
 print(phylum_summary_sorted, row.names = FALSE)
-ggplot(prevdf1, aes(TotalAbundance, Prevalence / nsamples(ps_1),color=Phylum)) +
-  ggtitle("Prevalence of Phyla Across Skin-Swab Samples") +
-  ggsubtitle("y-intercept = 5% prevalence"
-  )
+ggplot(prevdf, aes(TotalAbundance, Prevalence / nsamples(ps_1),color=Phylum)) +
+  ggtitle("Prevalence of Phyla Across Skin-Swab Samples", subtitle="dashed line = 5% prevalence") +
   geom_hline(yintercept = 0.05, alpha = 0.5, linetype = 2) +  geom_point(size = 2, alpha = 0.7) +
   scale_x_log10() +  xlab("Total Abundance") + ylab("Prevalence [Frac. Samples]") +
   facet_wrap(~Phylum) + theme(legend.position="none")
@@ -226,20 +228,18 @@ missing_sample_unique <- sample_check %>%
 print(missing_sample_unique)
 
 # Keep only samples that have control and surgical at each Day_Order
-paired_groups <- sample_data %>%
+paired_groups <- sample_check %>%
   group_by(Individual, Day_Order) %>%
   summarize(n_sites = n_distinct(Sample_Site), .groups = "drop") %>%
   filter(n_sites == 2) %>%
   transmute(Individual, Day_Order)
-filtered_sample_data <- sample_data %>%
+filtered_sample_data <- sample_check %>%
   inner_join(paired_groups, by = c("Individual", "Day_Order"))
 
-sample_data(ps_1)
-nrow(sample_data(ps_1))
-
+ 
 # Prune phyloseq object so it only contains these remaining samples 
-ps_1 <- prune_samples(filtered_sample_data$SampleID, ps_1)
-nrow(sample_data(ps_1))
+ps_2 <- prune_samples(filtered_sample_data$SampleID, ps_1)
+ 
 
 # Count unique samples by Day_Order and Sample_Site
 count_df <- filtered_sample_data %>%
@@ -254,7 +254,7 @@ count_df$Day_Order <- factor(count_df$Day_Order, levels = day_levels)
 
 count_df$Sample_Site <- factor(count_df$Sample_Site, levels = c("Control", "Surgical"))
 
-# Updated after removing dog-timepoint samples with missing pair
+# Updated after removing dog-timepoint samples with only one site
 p <- ggplot(count_df, aes(x = Day_Order, y = n, fill = Sample_Site)) +
   geom_col(position = position_dodge(width = 0.75), width = 0.75) +
   geom_text(
@@ -282,10 +282,10 @@ print(p)
 out_dir <- "../02_output_files/02_image_files"
 
 # Get reads and metadata per sample
-reads_per_sample <- sample_sums(ps_1)
-md <- as(sample_data(ps_1), "data.frame")
+reads_per_sample <- sample_sums(ps_2)
+md <- as(sample_data(ps_2), "data.frame")
  
-sample_names_ps <- sample_names(ps_1)
+sample_names_ps <- sample_names(ps_2)
 
 # Ensure sample order matches
 if (!all(sample_names_ps == rownames(md))) {
@@ -301,25 +301,22 @@ df <- data.frame(
   stringsAsFactors = FALSE
 )
 
-# Calculate total ASVs per sample
-# 1. Calculate total ASVs and total reads
-otu <- otu_table(ps_1)
+# Calculate total reads and ASVs per sample and add to metadata
+otu <- otu_table(ps_2)
 if (taxa_are_rows(otu)) {
   total_asvs <- colSums(otu > 0)
 } else {
   total_asvs <- rowSums(otu > 0)
 }
 
-total_reads <- sample_sums(ps_1)
-
-# 2. Extract metadata, append columns, and reassign
+total_reads <- sample_sums(ps_2)
  
 md$total_asv <- total_asvs
 md$total_reads <- total_reads
 
-sample_data(ps_1) <- sample_data(md)
+sample_data(ps_2) <- sample_data(md)
 
-# Aggregate reads and ASVs per Individual (summing across all samples from that Individual)
+# Aggregate reads and ASVs per Individual (summing across all samples from same dog)
 by_ind <- aggregate(
   cbind(total_reads, total_asv) ~ Individual + Sample_Plate,
   data = md,
@@ -342,11 +339,12 @@ p_reads <- ggplot(by_ind, aes(x = Sample_Plate, y = total_reads, fill = Sample_P
 out_reads <- paste0(out_dir, "/total_reads_by_sample_plate.png")
 ggplot2::ggsave(out_reads, p_reads, width = 8, height = 6)
 p_reads
+
 # Boxplot for total ASVs by Sample_Plate (each point = one Individual)
 p_asv <- ggplot(by_ind, aes(x = Sample_Plate, y = total_asv, fill = Sample_Plate)) +
   geom_boxplot() +
   scale_y_continuous(
-    labels = function(x) paste0(x / 1000, "K"),
+    labels = function(x) paste0(x / 1000, "k"),
     name = "Total ASVs (per Individual, in thousands)"
   ) +
   labs(
@@ -355,106 +353,91 @@ p_asv <- ggplot(by_ind, aes(x = Sample_Plate, y = total_asv, fill = Sample_Plate
   ) +
   theme_minimal()
 p_asv
+
 out_asv <- paste0(out_dir, "/total_asvs_by_sample_plate.png")
 ggplot2::ggsave(out_asv, p_asv, width = 8, height = 6)
 
-# Print summary to verify - each row is one Individual
 print(by_ind)
 
 ```
 
-# Shannon Alpha-Diversity 
+# Shannon Alpha-Diversity   
 ```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE}
-# 1. Filter and prepare the alpha diversity data frame
-alphadiv_plot_data <- estimate_richness(ps_1, measures = "Shannon") %>% 
+# Calculate alpha-diversity using Shannon Diversity Index for each skin sample 
+alphadiv_plot_data <- estimate_richness(ps_2, measures = "Shannon") %>% 
   rownames_to_column(var = "SampleID") %>% 
-  left_join(as.data.frame(sample_data(ps_1)), by = "SampleID")
-
-# 2. Generate the faceted dot plot for each individual dog
-ggplot(alphadiv_plot_data, aes(x = factor(Day_Order), y = Shannon, color = Sample_Site, group = Individual)) +
-  geom_point(size = 1) +
-  geom_line() + # Optional: connects the dots chronologically for each dog
-  facet_wrap(~ Individual) + 
+  left_join(as.data.frame(sample_data(ps_2)), by = "SampleID") %>% 
+  group_by(Individual) %>% 
+  mutate(Surgical_Location = Sample_Location[Sample_Site == "Surgical"][1]) %>% 
+  ungroup() %>% 
+  mutate(Surgical_Location = factor(Surgical_Location)) %>% 
+  arrange(Surgical_Location, Individual)
+ggplot(alphadiv_plot_data, aes(x = factor(Day_Order), y = Shannon, color = Sample_Site, group = Sample_Site)) + 
+  geom_point(size = 1, position = position_dodge(width = 0.3)) + 
+  geom_line(position = position_dodge(width = 0.3)) + 
+  facet_wrap(
+    Surgical_Location ~ Individual, 
+    labeller = label_both
+  ) + 
   scale_color_manual(values = c("Control" = "purple", "Surgical" = "blue")) + 
   theme_bw() + 
   labs(
-    title = "Shannon Diversity Across Timepoints per Dog", 
-    x = "Timepoint (Day Order)", 
+    title = "Shannon Diversity Across Timepoints per Dog",
+    x = "Timepoint",
     y = "Shannon Index",
-    color = "Sample Site"
-  ) +
-  theme(axis.text.x = element_text(angle = 90))
+    color = "Skin Site"
+  ) + 
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
 
- 
-plot_richness(ps_1, 
+# Box Plot of Shannon Index values across timepoints (dog's labeled with which type of surgery)
+plot_richness(ps_2, 
               x = "Day_Order", 
               measures = "Shannon") + 
   geom_boxplot(aes(fill = Sample_Site), show.legend = TRUE) +
-  facet_grid(. ~ Sample_Site) + # Adjusted facet since there is only 1 metric now
+  facet_grid(. ~ Sample_Site) + 
   scale_fill_manual(values = c("Control" = "purple", "Surgical" = "blue")) +
   theme_bw() +
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
-  labs(title = "Shannon Diversity",
+  labs(title = "Shannon Diversity Across Timepoints",
        x = "Timepoint",
-       fill = "Sample Site")
+       fill = "Skin Site")
 
-# Alpha diversity across timepoints for the Control Groups 
-alphadiv <- estimate_richness(ps_1, measures = c("Shannon")) %>%
+# Summary of alpha diversity across timepoints 
+alphadiv_all <- estimate_richness(ps_2, measures = c("Shannon")) %>%
   rownames_to_column(var = "SampleID") %>%
-  left_join(as.data.frame(sample_data(ps_1)), by = "SampleID")  %>% 
-  filter(Sample_Site == "Control")  
-
-kruskal.test(Shannon ~ Day_Order, data = alphadiv)
- 
-dunnS <- dunnTest(Shannon ~ Day_Order,
-                  data=alphadiv,
-                  method="bh")
- dunnS
- 
-# Alpha diversity across timepoints for the Surgery Groups 
-alphadiv <- estimate_richness(ps_1, measures = c("Shannon")) %>%
-  rownames_to_column(var = "SampleID") %>%
-  left_join(as.data.frame(sample_data(ps_1)), by = "SampleID")  %>% 
-  filter(Sample_Site == "Surgical") 
-
-kruskal.test(Shannon ~ Day_Order, data = alphadiv)
- 
-dunnS <- dunnTest(Shannon ~ Day_Order,
-                  data=alphadiv,
-                  method="bh")
- dunnS
- 
+  left_join(as.data.frame(sample_data(ps_2)), by = "SampleID")  
+alphadiv_summary <- alphadiv_all %>%
+  summarise(
+    mean_shannon = mean(Shannon, na.rm = TRUE),
+    sd_shannon   = sd(Shannon, na.rm = TRUE),
+    n            = n(),
+    .by          = c(Day_Order, Sample_Site)  
+  ) 
+alphadiv_summary
 ```
 
 # Relative Abundances
 ```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE}
 # Normalization using relative abundances
-ps_rel <- transform_sample_counts(ps_1, function(x) x / sum(x))
-
+ps_rel <- transform_sample_counts(ps_2, function(x) x / sum(x))
 individual_list <- unique(sample_data(ps_rel)$Individual)
 
-# create color pallette 
+# create color palette so phyla is the same color across all individual dog plots 
 all_phyla <- tax_table(ps_rel)[, "Phylum"] %>% as.vector() %>% unique() %>% na.omit() %>% sort()
 n_phyla <- length(all_phyla)
 base_cols <- brewer.pal(min(n_phyla, 12), "Paired")
 phylum_cols_vec <- colorRampPalette(base_cols)(n_phyla)
 phylum_colors <- setNames(phylum_cols_vec, all_phyla)
 
-# 4. Loop through each individual to generate exactly ONE plot per dog
+# Generate per dog plots showing (top 20) phyla diversity across timepoints
 for (ind in individual_list) {
-  
-  # Subset the main relative abundance object for this specific dog
   ps_ind <- subset_samples(ps_rel, Individual == ind)
-  
-  # Skip to the next dog if this individual has no samples
-  if(nsamples(ps_ind) == 0) next
-  
-  # Melt and clean data for both conditions simultaneously
-  plot_df <- psmelt(ps_ind) %>% 
+    plot_df <- psmelt(ps_ind) %>% 
     filter(Sample_Site %in% c("Control", "Surgical")) %>% 
-    group_by(Day_Order, Phylum, Sample_Site) %>% 
-    summarise(Abundance = sum(Abundance), .groups = "drop") %>% 
-    rename(Condition = Sample_Site)
+    mutate(
+      Surgical_Location = unique(Sample_Location[Sample_Site == "Surgical" & !is.na(Sample_Location)])[1]
+    ) %>% 
+    mutate(Surgical_Location = factor(Surgical_Location))
   
   # Identify top 20 phyla specific to this dog's profile
   top20_ind <- plot_df %>% 
@@ -465,16 +448,15 @@ for (ind in individual_list) {
     pull(Phylum)
   
   phylum_levels_ind <- c(top20_ind, "Other")
-  
-  # Recode lower abundance phyla into "Other"
+   
   plot_df <- plot_df %>% mutate(
     Phylum = ifelse(Phylum %in% top20_ind, Phylum, "Other"),
     Phylum = factor(Phylum, levels = phylum_levels_ind),
-    Condition = factor(Condition, levels = c("Control", "Surgical")),
+    Sample_Site = factor(Sample_Site, levels = c("Control", "Surgical")),
+    Surgical_Location = factor(Surgical_Location, levels = c("Abdomen", "Stifle")),
     Day_Order = factor(Day_Order)
   )
   
-  # Map colors safely from master palette; fallback to gray grid if missing
   local_cols <- phylum_colors[top20_ind]
   missing_indices <- is.na(local_cols)
   if(any(missing_indices)) {
@@ -483,10 +465,9 @@ for (ind in individual_list) {
   }
   values_ind <- c(local_cols, "Other" = "grey70")
   
-  # Generate the single combined plot for this dog
   p <- ggplot(plot_df, aes(x = Day_Order, y = Abundance, fill = Phylum)) + 
-    geom_col(position = "stack", width = 0.7) + # Changed to standard stacked bars
-    facet_wrap(~Condition, nrow = 1) +          # Side-by-side comparison panels
+    geom_col(position = "stack", width = 0.7) +  
+    facet_wrap(~Sample_Site, nrow = 1) +          
     scale_fill_manual(
       values = values_ind,
       breaks = phylum_levels_ind,
@@ -495,48 +476,52 @@ for (ind in individual_list) {
     theme_minimal() + 
     theme(
       axis.text.x = element_text(angle = 75, hjust = 1),
-      panel.spacing = unit(1.5, "lines")        # Clear visual separation between panels
+      panel.spacing = unit(1.5, "lines")        
     ) + 
     labs(
       title = paste0("Relative Abundance Across Timepoints by Phyla"),
-      subtitle = paste0("Dog: ", ind),
-      x = "Timepoint (Day Order)",
+      subtitle = paste0("Dog: ", ind, " Surgical Location: ", unique(plot_df$Surgical_Location)),
+      x = "Timepoint",
       y = "Relative Abundance"
     )
-  
-  # Output the plot to your R session
   print(p)
 }
 
  
 ```
 
-# Bray-Curtis Beta-Diversity 
-## Seq. Runs (batch-effect)
-```{r, message=FALSE, warning=FALSE, echo=TRUE}
-set.seed(100)
-# Calculate bray-curtis distance matrix on samples using ASV relative abundances
+# Bray-Curtis Beta-Diversity + PCoA
+```{r, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
+# Generate bray-curtis distance matrix using ASV relative abundances
 metadata <- data.frame(sample_data(ps_rel))
 bray_dist <- phyloseq::distance(ps_rel, method = "bray")
-# generate PCoA using the sample distance matrix
-bray_pcoa <- ordinate(physeq = ps_rel, method = "PCoA", distance = bray_dist)
 
-# Color samples by Sequencing Run
+set.seed(100)
+# generate PCoA using bray-curtis distance matrix
+bray_pcoa <- ordinate(physeq = ps_rel, method = "PCoA", distance = bray_dist)
+```
+
+# Statistical Analysis 
+
+## Sequencing Run Batch Effect
+
+### PERMANOVA 
+While PERMANOVA tests if the centers of sequencing clusters are in different locations, PERMDISP tests if the sizes of the clusters are significantly different, regardless of where they are on the PCoA plot.
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+# Draw ellipses around samples from same sequencing run to visualize batch effects
 p1 <- plot_ordination(ps_rel, bray_pcoa, color = "Sample_Plate")
-p1 + ggtitle("PCoA of Beta-Diversity (Bray-Curtis)") +
+p1 + ggtitle("PCoA of Beta-Diversity (Bray-Curtis)", subtitle = "Ellipses encircle samples belonging to the same sequencing run.") +
   geom_point(size = 1.5) + 
   theme_bw() +
   stat_ellipse(aes(fill = Sample_Plate, group = Sample_Plate), alpha = 0.2, geom = "polygon")
-# PERMANOVA test for significant differences amongst sequencing runs 
+
+# PERMANOVA test  
 adonis2(bray_dist ~ Sample_Plate, data = metadata, permutations = 999)
-```
-```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE}
-print("Within a cluster what is the average distance to the centroid?")
-# Distance of each 16S sample to its sequencing batch centroid 
-# Method = PERMDISP2 (multivariate analogue of Levene's test)
+
+
+# PERMDISP2 test (multivariate analogue of Levene's test)
 betadisper_result <- betadisper(bray_dist, group = metadata$Sample_Plate)
 
-print("What are the differences between the libraries?")
 average_by_plate <- data.frame(
   Plate = metadata$Sample_Plate,
   Dist_to_Centroid = betadisper_result$distances
@@ -559,83 +544,64 @@ df_points$Sample_Plate <- metadata$Sample_Plate
 df_centroids <- as.data.frame(scores(betadisper_result, display = "centroids"))
 df_centroids$Sample_Plate <- rownames(df_centroids)
 
-ggplot(df_points, aes(x = PCoA1, y = PCoA2, color = Sample_Plate)) +
-  geom_segment(data = merge(df_points, df_centroids, by = "Sample_Plate", suffixes = c("", ".cen")),
-               aes(xend = PCoA1.cen, yend = PCoA2.cen), alpha = 0.5) +
-  geom_point(size = 2) +
-  geom_point(data = df_centroids, size = 5, shape = 17) + 
-  stat_ellipse(aes(fill = Sample_Plate, group = Sample_Plate), alpha = 0.1, geom = "polygon", color = NA) +
-  ggtitle("PCoA of Beta-Diversity (Bray-Curtis) with Centroids") +
-  theme_bw()
-
-# Permutation test for significance
-permutest(betadisper_result, permutations = 999)
-
-# SEq Run Pairwise Post-hoc comparisons
-TukeyHSD(betadisper_result)
-
-
-# Within each sequencing run, test if there is a signficant difference amongst the centroid  
-split_idx <- split(seq_len(nrow(metadata)), metadata$Sample_Plate)
-
-results <- lapply(split_idx, function(i) {
-  d_sub <- as.dist(as.matrix(bray_dist)[i, i])
-  md_sub <- metadata[i, ]
-  bd <- betadisper(d_sub, group = md_sub$Day_Order)
-  list(
-    anova = anova(bd),
-    perm = permutest(bd, permutations = 999)
-  )
-})
-
-print(results)
+# Pairwise post-hoc comparisons between sequencing runs
+print(TukeyHSD(betadisper_result))
 ```
-## Timepoints 
+
+### PERMDISP2   
 ```{r, message=FALSE, warning=FALSE, echo=TRUE}
-# Run PERMANOVA constraining permutations within plates
+# PERMDISP2 test (multivariate analogue of Levene's test)
+betadisper_result <- betadisper(bray_dist, group = metadata$Sample_Plate)
+
+average_by_plate <- data.frame(
+  Plate = metadata$Sample_Plate,
+  Dist_to_Centroid = betadisper_result$distances
+)
+
+average_by_plate_table <- average_by_plate %>%
+  group_by(Plate) %>%
+  summarize(
+    Mean_Dist = mean(Dist_to_Centroid, na.rm = TRUE),
+    SD_Dist   = sd(Dist_to_Centroid, na.rm = TRUE),
+    CV_Percent = (SD_Dist / Mean_Dist *100) 
+  )
+
+print(average_by_plate_table)
+
+# Extract the PCoA coordinates and centroids
+df_points <- as.data.frame(scores(betadisper_result, display = "sites"))
+df_points$Sample_Plate <- metadata$Sample_Plate
+
+df_centroids <- as.data.frame(scores(betadisper_result, display = "centroids"))
+df_centroids$Sample_Plate <- rownames(df_centroids)
+
+set.seed(100)
+print(permutest(betadisper_result, perm=999))
+# Pairwise post-hoc comparisons between sequencing runs
+print(TukeyHSD(betadisper_result))
+```
+
+## Timepoints after Surgery
+
+### PERMANOVA
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+set.seed(100)
+# Run PERMANOVA constraining permutations within plates to account for sequencing batch effects
 global_permanova_strata <- adonis2(
   bray_dist ~ Day_Order, 
-  data = md, 
-  strata = md$Sample_Plate,
+  data = metadata, 
+  strata = metadata$Sample_Plate,
   permutations = 999
 )
 
 print(global_permanova_strata)
 ```
 
-```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE}
- 
-## Merge rooted tree to phyloseq object  
-# Unifrac distance matrix 
-# Create random tree matching the taxa names
-random_tree <- rtree(ntaxa(ps_rel), rooted = TRUE, tip.label = taxa_names(ps))
-plot(random_tree)
-
-# Merge tree into the phyloseq object
-ps_2 <- merge_phyloseq(ps_rel, random_tree)
-ps_2
-
-# Calculate weighted UniFrac distance matrix 
-dist_unifrac_2 <- phyloseq::distance(ps_2, method = "wunifrac")
-
-# Run PCoA using the distance matrix
-uni_2 <- ordinate(physeq = ps_2, method = "PCoA", distance = dist_unifrac_2)
-
-
-# Run PERMANOVA constraining permutations within plates
-global_permanova_strata <- adonis2(
-  dist_unifrac_2 ~ Day_Order, 
-  data = md, 
-  strata = md$Sample_Plate,
-  permutations = 999
-)
-
-print(global_permanova_strata)
-```
-
-# Analyze Control-Surgical Bray-Curtis Distances Across Timepoints 
+### Pairwise PERMANOVA: Control-Surgical Bray-Curtis Distances 
 ```{r,fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
-paired_distances <- md %>%
+# Extract pairwise differences between control annd surgical sites for each dog-timepoint
+bray_matrix <- as.matrix(bray_dist)
+paired_distances <- metadata %>%
   group_by(Dog_ID, Day_Order) %>%
   filter(all(c("Control", "Surgical") %in% Sample_Site)) %>%
   ungroup() %>%
@@ -643,14 +609,13 @@ paired_distances <- md %>%
   summarise(
     Control_Sample = SampleID[Sample_Site == "Control"][1],
     Surgical_Sample = SampleID[Sample_Site == "Surgical"][1],
-    Bray_Distance = bray_mat[Control_Sample, Surgical_Sample],
+    Bray_Distance = bray_matrix[Control_Sample, Surgical_Sample],
     Sample_Plate = Sample_Plate[1],
-    Day_Order = Day_Order[1],  # Add the character label
+    Day_Order = Day_Order[1],   
     .groups = "drop"
   )
 
 
-# Show group means
 print("Group means by Day_Order:")
 print(paired_distances %>%
   group_by(Day_Order) %>%
@@ -662,38 +627,31 @@ print(paired_distances %>%
     .groups = "drop"
   ))
 
-
-# Print the results
-print(paired_distances)
-
-# Generate the histogram
+# Plot Distribution of Bray-Curtis Distances
 histogram_distances <- ggplot(paired_distances, aes(x = Bray_Distance)) +
   geom_histogram(binwidth = 0.05, fill = "skyblue", color = "black", alpha = 0.7) +
   theme_minimal() +
   labs(
-    title = "Distribution of Average Bray-Curtis Distances per Dog",
-    x = "Average Bray-Curtis Distance",
-    y = "Count of Dogs"
+    title = "Distribution of Bray-Curtis Distances",
+    x = "Bray-Curtis Distance",
+    y = "Number of Control-Surgical Pairwise Comparisons (n = 208)"
   )
 print(histogram_distances)
 
- 
+set.seed(100)
 pairwise_results <- pairwise.adonis2(
   bray_dist ~ Day_Order,
   strata = "Sample_Plate",
-  data = md)
- 
-print(pairwise_results)
+  data = metadata,
+  nperm = 999)
 
-#  Pull the raw p-values 
 p_values <- sapply(names(pairwise_results)[-1], function(x) {
   pairwise_results[[x]][["Pr(>F)"]][1]
 })
 
-# Benjamini-Hochberg (BH) adjustment   
+# Benjamini-Hochberg (BH) adjustment since we are testing multiple comparisons
 p_adjusted <- p.adjust(p_values, method = "BH")
 
-# 3. Compile them into a clean, flat data frame
 pairwise_df <- data.frame(
   Comparison = names(p_values),
   p_value    = p_values,
@@ -701,24 +659,16 @@ pairwise_df <- data.frame(
   row.names  = NULL
 )
 
-
-# 1. Split the Comparison column by the "_vs_" delimiter
 groups <- str_split_fixed(pairwise_df$Comparison, "_vs_", 2)
 
-# 2. Add the new clean columns back to your dataframe
 pairwise_df$Group1 <- groups[, 1]
 pairwise_df$Group2 <- groups[, 2]
 
-# 3. Clean up: Reorder columns and drop the original messy header
 pairwise_df <- pairwise_df[, c("Group1", "Group2", "p_value", "p_adj")]
 
-# 4. Print the final result
-print(pairwise_df)
-
+alpha <- 0.05
 pairwise_tidy <- pairwise_df %>%
-# Drop empty matrix intersections
   filter(!is.na(p_adj)) %>% 
-  # Add significance labels
   mutate(
     Significant = ifelse(p_adj <= alpha, "Yes", "No"),
     Stars = case_when(
@@ -731,15 +681,13 @@ pairwise_tidy <- pairwise_df %>%
     p_adj = round(p_adj, 4) ) %>%
   arrange(p_adj) 
 
-print(pairwise_tidy)
-
-# Keep only significant distances
+# Filter out insignificant pairwise results
 sig_df <- pairwise_tidy %>%
   filter(Significant == "Yes") %>%
   mutate(
     group1 = Group1,
     group2 = Group2,
-    y.position = NA_real_,   # fill below
+    y.position = NA_real_,    
     label = Stars
   )
 x_levels <- levels(factor(paired_distances$Day_Order))
@@ -754,7 +702,7 @@ sig_df <- sig_df %>%
     y.position = max(paired_distances$Bray_Distance, na.rm = TRUE) +
       seq(0.05, by = 0.05, length.out = n())
   )
-
+print(sig_df)
 median_df <- paired_distances %>%
   group_by(Day_Order) %>%
   summarise(median_dist = median(Bray_Distance, na.rm = TRUE), .groups = "drop")
@@ -778,7 +726,7 @@ ggplot(paired_distances, aes(x = factor(Day_Order), y = Bray_Distance)) +
   ) +
   labs(
     title = "Control vs. Surgical Site Bray-Curtis Distances Across Timepoints",
-    subtitle = "Trend line indicating average bray-curtis distances; * adj.p-value =< 0.05",
+    subtitle = "Trend line indicating median bray-curtis distances",
     x = "Timepoint",
     y = "Bray-Curtis Distance"
   ) +
@@ -788,16 +736,21 @@ ggplot(paired_distances, aes(x = factor(Day_Order), y = Bray_Distance)) +
     axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
     axis.text.y = element_text(size = 12)
   )
+
+
 ```
 
-# Fit Model to Pairwise Bray-Curtis Dissimilarities between Control and Surgical Skin Site Across Timepoints 
-```{r, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
-paired_distances <- paired_distances %>%
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE}
+
+### Fit Point-Change Model to Pairwise Bray-Curtis Dissimilarities 
+# Change timepoints to number of days since surgery
+paired_distances_numeric <- paired_distances %>%
   mutate(
     Day_Order = case_when(
-      Day_Order == "Admission" ~ -2,            
-      Day_Order == "Day 0a - Pre Surgery" ~ -1,
-      Day_Order == "Day 0c - Post Surgery" ~ 0,
+      Day_Order == "Admission" ~ -1,            
+      Day_Order == "Day 0a - Pre Surgery" ~ -0.5,
+      Day_Order == "Day 0c - Post Surgery" ~ 0.5,
       Day_Order == "Day 1" ~ 1,
       Day_Order == "Day 3" ~ 3,
       Day_Order == "Week 1" ~ 7,
@@ -806,50 +759,137 @@ paired_distances <- paired_distances %>%
       Day_Order == "Week 4" ~ 28,
       Day_Order == "Week 5" ~ 35,
       Day_Order == "Week 6" ~ 42,
-      TRUE ~ NA_real_  # Handle any unmatched values
+      TRUE ~ NA_real_  
     )
   )
 
+paired_distances_numeric$Dog_ID <- factor(paired_distances_numeric$Dog_ID)
+paired_distances_numeric$Sample_Plate <- factor(paired_distances_numeric$Sample_Plate)
+
+tp_med <- paired_distances %>%
+  group_by(Day_Order) %>%
+  summarise(med_bray = median(Bray_Distance, na.rm = TRUE), .groups = "drop") %>%
+  arrange(Day_Order)
+
+x <- tp_med$med_bray
+
+fit_mean <- cpt.mean(x, method = "PELT", penalty = "MBIC")
+fit_var  <- cpt.var(x,  method = "PELT", penalty = "MBIC")
+fit_both <- cpt.meanvar(x, method = "PELT", penalty = "MBIC")
+
+cpts(fit_mean)
+cpts(fit_var)
+cpts(fit_both)
+
+plot(fit_both, main = "Changepoint on median Bray-Curtis by timepoint")
 
 
-lm <- lm(Bray_Distance ~ Day_Order + Sample_Plate,
-            data = paired_distances)
-summary(lm)
-os <- segmented(lm, seg.Z = ~Day_Order)
-summary(os)
-confint(os)
- 
-library(ggplot2)
-library(segmented)
+# Check for specific changes between before and after surgery 
+bp <- -0.5   # -0.5 = Day 0c - Pre Surgery
+paired_distances_numeric <- paired_distances_numeric %>%
+  mutate(
+    Day_c = Day_Order - bp,
+    post_bp = ifelse(Day_Order > bp, 1, 0),
+    Day_after_bp = Day_c * post_bp
+  )
 
-# 1. Create a sequence grid for Day_Order (X-axis)
-# We choose a single reference plate (e.g., "Plate_1" or the first unique plate) 
-# so R can calculate predictions for a single line profile.
-reference_plate <- unique(paired_distances$Sample_Plate)[1] 
-
-grid_data <- data.frame(
-  Day_Order = seq(min(paired_distances$Day_Order), 
-                  max(paired_distances$Day_Order), 
-                  length.out = 100),
-  Sample_Plate = reference_plate
+lm_changepoint_pre_surgery <- lmer(
+  Bray_Distance ~ Day_c + Day_after_bp + Sample_Plate + (1 | Dog_ID),
+  data = paired_distances_numeric
 )
 
-# 2. Generate predictions with confidence intervals
-# Note: For 'segmented' objects, standard predict interval="confidence" may lack 
-# full breakpoint variance, but it computes the segment errors.
-pred_vals <- predict(os, newdata = grid_data, interval = "confidence")
 
-# 3. Combine grid data and predictions
-plot_data <- cbind(grid_data, pred_vals)
+bp <- 0.5   # 0.5 = Day 0c - Post Surgery
+paired_distances_numeric <- paired_distances_numeric %>%
+  mutate(
+    Day_c = Day_Order - bp,
+    post_bp = ifelse(Day_Order > bp, 1, 0),
+    Day_after_bp = Day_c * post_bp
+  )
 
-# 4. Plot using geom_ribbon (X = Day_Order, Y = Bray_Distance)
-ggplot(plot_data, aes(x = Day_Order, y = fit)) +
-  geom_line(color = "blue", size = 1) +
-  geom_ribbon(aes(ymin = lwr, ymax = upr), fill = "blue", alpha = 0.2) +
-  # Add the raw experimental scatter data
-  geom_point(data = paired_distances, aes(x = Day_Order, y = Bray_Distance), alpha = 0.5) +
-  labs(x = "Day Order", y = "Avg Bray Distance", title = "Segmented Regression with CI Band")
+lm_changepoint_post_surgery <- lmer(
+  Bray_Distance ~ Day_c + Day_after_bp + Sample_Plate + (1 | Dog_ID),
+  data = paired_distances_numeric
+)
 
+print("Changepoint: Pre-Surgery")
+summary(lm_changepoint_pre_surgery)
+
+print("Changepoint: Post-Surgery")
+summary(lm_changepoint_post_surgery)
+
+anova(lm_changepoint_pre_surgery, lm_changepoint_post_surgery)
+
+
+
+newdat <- expand.grid(
+  Day_Order = seq(min(paired_distances_numeric$Day_Order, na.rm = TRUE),
+                  max(paired_distances_numeric$Day_Order, na.rm = TRUE),
+                  length.out = 100),
+  Sample_Plate = levels(factor(paired_distances_numeric$Sample_Plate))
+)
+
+bp <- 0.5
+newdat <- newdat %>%
+  mutate(
+    Day_c = Day_Order - bp,
+    post_bp = ifelse(Day_Order > bp, 1, 0),
+    Day_after_bp = Day_c * post_bp
+  )
+
+X <- model.matrix(~ Day_c + Day_after_bp + Sample_Plate, data = newdat)
+beta <- fixef(lm_changepoint_post_surgery)
+V <- vcov(lm_changepoint_post_surgery)
+
+newdat$fit <- as.numeric(X %*% beta)
+newdat$se <- sqrt(diag(X %*% V %*% t(X)))
+newdat$lwr <- newdat$fit - 1.96 * newdat$se
+newdat$upr <- newdat$fit + 1.96 * newdat$se
+
+ggplot(newdat, aes(x = Day_Order, y = fit, color = Sample_Plate, fill = Sample_Plate)) +
+  geom_line(linewidth = 1) +
+  geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.2, color = NA) +
+  theme_classic() +
+  labs(x = "Day Order", y = "Predicted Bray Distance")
+
+
+ggplot() +
+  geom_point(data = paired_distances_numeric,
+             aes(x = Day_Order, y = Bray_Distance, color = Sample_Plate),
+             alpha = 0.5) +
+  geom_line(data = newdat,
+            aes(x = Day_Order, y = fit, color = Sample_Plate),
+            linewidth = 1) +
+  geom_ribbon(data = newdat,
+              aes(x = Day_Order, ymin = lwr, ymax = upr, fill = Sample_Plate),
+              alpha = 0.2, color = NA) +
+  theme_classic() +
+  labs(x = "Day Order", y = "Bray Distance")
+
+
+bp <- 0.5
+
+pred_grid <- data.frame(
+  Day_Order = seq(min(paired_distances_numeric$Day_Order, na.rm = TRUE),
+                  max(paired_distances_numeric$Day_Order, na.rm = TRUE),
+                  by = 0.5),
+  Sample_Plate = "CHLib1",
+  Dog_ID = paired_distances_numeric$Dog_ID[1]
+)
+
+pred_grid$Day_c <- pred_grid$Day_Order - bp
+pred_grid$post_bp <- ifelse(pred_grid$Day_Order > bp, 1, 0)
+pred_grid$Day_after_bp <- pred_grid$Day_c * pred_grid$post_bp
+
+pred_grid$fit <- predict(lm_changepoint_post_surgery, newdata = pred_grid, re.form = NA)
+
+target_day <- -1
+target_fit <- pred_grid$fit[which.min(abs(pred_grid$Day_Order - target_day))]
+
+tol <- 42   # adjust as needed
+matches <- pred_grid[abs(pred_grid$fit - target_fit) <= tol, ]
+
+matches
 ```
 
 ```{r, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
