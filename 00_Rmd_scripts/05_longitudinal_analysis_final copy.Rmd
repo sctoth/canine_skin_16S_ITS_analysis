@@ -777,339 +777,8 @@ ggplot(paired_distances, aes(x = Day_Order, y = Bray_Distance)) +
   )
 ```
 
-
-```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE}
-## Skin microbiome composition shifts at breakpoint
-
-### Day_Order Pairwise PERMANOVA on control samples  
-# Keep only control samples
-control_samples <- paired_sample_data %>%
-  filter(Sample_Site == "Control") %>%
-  distinct(Individual, Day_Order, SampleID)
-
-control_sample_data <- paired_sample_data %>%
-  inner_join(control_samples, by = c("Individual", "Day_Order", "SampleID"))
-
  
-# Prune phyloseq object so it only contains these remaining samples 
-ps_4 <- prune_samples(control_sample_data$SampleID, ps_1)
-
-ps_rel_4 <- transform_sample_counts(ps_4, function(x) x / sum(x))
-bray_dist <- phyloseq::distance(ps_rel_4, method = "bray")
-bray_dist <- as.matrix(bray_dist)
-
-# PERMANOVA test
-set.seed(100)
-adonis2(bray_dist ~ Day_Order, data = control_sample_data, permutations = 999, by = "margin")  
-
-# pairwise PERMANOVA between timepoints (Day_Order)  
-set.seed(100)
-pairwise_results_control <- pairwise.adonis2(
-  bray_dist ~ Day_Order,
-  strata = "Dog_ID",
-  data = control_sample_data,
-  nperm = 9999)
-
-p_values <- sapply(names(pairwise_results_control)[-1], function(x) {
-  pairwise_results_control[[x]][["Pr(>F)"]][1]
-})
-
-
-F_values <- sapply(names(pairwise_results_control)[-1], function(x) {
-  pairwise_results_control[[x]][["F"]][1]
-})
-
-R2_values <- sapply(names(pairwise_results_control)[-1], function(x) {
-  pairwise_results_control[[x]][["R2"]][1]
-})
-
-# Benjamini-Hochberg (BH) adjustment since we are testing multiple comparisons
-p_adjusted <- p.adjust(p_values, method = "BH")
-
-pairwise_df_control <- data.frame(
-  Comparison = names(p_values),
-  R2         = R2_values,
-  F_value    = F_values, 
-  p_value    = p_values,
-  p_adj      = p_adjusted,
-  row.names  = NULL
-)
-
-
-groups <- str_split_fixed(pairwise_df_control$Comparison, "_vs_", 2)
-
-pairwise_df_control$Group1 <- groups[, 1]
-pairwise_df_control$Group2 <- groups[, 2]
-
-pairwise_df_control <- pairwise_df_control[, c("Group1", "Group2", "R2", "F_value", "p_value")]
-
-alpha <- 0.05
-pairwise_tidy_control <- pairwise_df_control %>%
-  mutate(
-    Significant = ifelse(p_value <= alpha, "Yes", "No"),
-    Stars = case_when(
-      p_value <= 0.001 ~ "***",
-      p_value <= 0.01  ~ "**",
-      p_value <= 0.05  ~ "*",
-      p_value <= 0.10 ~ ".",  
-      TRUE ~ ""
-    ))%>%
-    arrange(p_value)%>%
-    filter(Group1 == "Day 0c - Post Surgery" | Group2 =="Day 0c - Post Surgery") %>%
-    filter(Significant == "Yes")
-
-
- pairwise_tidy_control
-  
-```
-
-
-```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE}
-### Day_Order Pairwise PERMANOVA on surgical samples 
-# Keep only surgical samples
-surgical_samples <- metadata %>%
-  filter(Sample_Site == "Surgical") %>%
-  distinct(Individual, Day_Order, SampleID)
-
-surgical_sample_data <- metadata %>%
-  inner_join(surgical_samples, by = c("Individual", "Day_Order", "SampleID"))
-
- 
-# Prune phyloseq object so it only contains these remaining samples 
-ps_3 <- prune_samples(surgical_sample_data$SampleID, ps_1)
-
-ps_rel_3 <- transform_sample_counts(ps_3, function(x) x / sum(x))
-bray_dist <- phyloseq::distance(ps_rel_3, method = "bray")
-bray_dist <- as.matrix(bray_dist)
-
-# PERMANOVA test
-set.seed(100)
-adonis2(bray_dist ~ Day_Order, data = surgical_sample_data, permutations = 999, by = "margin")  
-
-# pairwise PERMANOVA between timepoints (Day_Order)  
-set.seed(100)
-pairwise_results_surgical <- pairwise.adonis2(
-  bray_dist ~ Day_Order,
-  strata = "Dog_ID",
-  data = surgical_sample_data,
-  nperm = 9999)
-
-p_values <- sapply(names(pairwise_results_surgical)[-1], function(x) {
-  pairwise_results_surgical[[x]][["Pr(>F)"]][1]
-})
-
-
-F_values <- sapply(names(pairwise_results_surgical)[-1], function(x) {
-  pairwise_results_surgical[[x]][["F"]][1]
-})
-
-R2_values <- sapply(names(pairwise_results_surgical)[-1], function(x) {
-  pairwise_results_surgical[[x]][["R2"]][1]
-})
-
-# Benjamini-Hochberg (BH) adjustment since we are testing multiple comparisons
-p_adjusted <- p.adjust(p_values, method = "BH")
-
-pairwise_df_surgical <- data.frame(
-  Comparison = names(p_values),
-  R2         = R2_values,
-  F_value    = F_values, 
-  p_value    = p_values,
-  p_adj      = p_adjusted,
-  row.names  = NULL
-)
-
-
-groups <- str_split_fixed(pairwise_df_surgical$Comparison, "_vs_", 2)
-
-pairwise_df_surgical$Group1 <- groups[, 1]
-pairwise_df_surgical$Group2 <- groups[, 2]
-
-pairwise_df_surgical <- pairwise_df_surgical[, c("Group1", "Group2", "R2", "F_value", "p_value")]  
-
-alpha <- 0.05
-pairwise_tidy_surgical <- pairwise_df_surgical %>%
-  mutate(
-    Significant = ifelse(p_value <= alpha, "Yes", "No"),
-    Stars = case_when(
-      p_value <= 0.001 ~ "***",
-      p_value <= 0.01  ~ "**",
-      p_value <= 0.05  ~ "*",
-      p_value <= 0.10 ~ ".",  
-      TRUE ~ ""
-    ))%>%
-    arrange(p_value)%>%
-    filter(Group1 == "Day 0c - Post Surgery" | Group2 =="Day 0c - Post Surgery") %>%
-    filter(Significant == "Yes")
-
- pairwise_tidy_surgical
-```
-
-## Differential abundance at breakpoint between stifle control and surgical sites 
-Wilcoxon signed rank (WSR) test is used to compare relative abundances of species between control and surgical sites at the breakpoint. However surgical sites were on both the abdomen and stifle, while control sites were only the stifle region. The PERMANOVA test shows a significant difference between abdomen and stifle sites potentially suggesting differences in the baseline microbiome of these two regions. Therefore the specific relative abundances of taxa from abdomen samples should not be compared to control stifle samples. Subsequently, the paired samples were subsetted to only within the stifle surgical group.
-
-### Sample Location: PCoA Plot + PERMANOVA test 
-```{r, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
-# Keep only surgical samples
-surgical_samples <- metadata %>%
-  filter(Sample_Site == "Surgical") %>%
-  distinct(Individual, Day_Order, SampleID)
-
-surgical_sample_data <- metadata %>%
-  inner_join(surgical_samples, by = c("Individual", "Day_Order", "SampleID"))
-
-
-# Prune phyloseq object so it only contains these remaining samples 
-ps_3 <- prune_samples(surgical_sample_data$SampleID, ps_1)
-
-ps_rel_3 <- transform_sample_counts(ps_3, function(x) x / sum(x))
-bray_dist <- phyloseq::distance(ps_rel_3, method = "bray")
-
-
-set.seed(100)
-bray_pcoa <- ordinate(ps_rel_3, method = "PCoA", distance =  bray_dist)
-p1 <- plot_ordination(ps_rel_3, bray_pcoa, color = "Sample_Location")
-
-p1 + ggtitle("PCoA of Bray-Curtis Dissimilarities", subtitle = "Ellipses encircle and color surgical samples belonging to the same sample location.") +
-  geom_point(size = 1.5) + 
-  theme_bw() +
-  stat_ellipse(aes(fill = Sample_Location, group = Sample_Location), alpha = 0.2, geom = "polygon")
-
-# PERMANOVA test
-set.seed(100)
-adonis2(bray_dist ~ Sample_Location + Dog_ID, data = surgical_sample_data, permutations = 999, by = "terms") 
-```
-
-### Taxa Relative Abundances in Stifle Groups
-```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE} 
-individual_list <- unique(as.data.frame(as(sample_data(ps_rel_2), "data.frame"))$Individual[sample_data(ps_rel_2)$Surgery_Type == "Stifle"])
-
-# create color palette so phyla is the same color across all individual dog plots 
-all_phyla <- tax_table(ps_rel_2)[, "Phylum"] %>% as.vector() %>% unique() %>% na.omit() %>% sort()
-n_phyla <- length(all_phyla)
-base_cols <- brewer.pal(min(n_phyla, 12), "Paired")
-phylum_cols_vec <- colorRampPalette(base_cols)(n_phyla)
-phylum_colors <- setNames(phylum_cols_vec, all_phyla)
-
-# Generate per dog plots showing (top 10) phyla diversity across timepoints
-for (ind in individual_list) {
-  ps_ind <- subset_samples(ps_rel_2, Individual == ind)
-    plot_df <- psmelt(ps_ind) %>% 
-    filter(Sample_Site %in% c("Control", "Surgical"))  
-  
-  # Identify top 10 phyla specific to this dog's profile
-  top20_ind <- plot_df %>% 
-    group_by(Phylum) %>% 
-    summarise(Total_Abundance = sum(Abundance), .groups = "drop") %>% 
-    arrange(desc(Total_Abundance)) %>% 
-    slice_head(n = 10) %>% 
-    pull(Phylum)
-  
-  phylum_levels_ind <- c(top20_ind, "Other")
-   
-  plot_df <- plot_df %>% mutate(
-    Phylum = ifelse(Phylum %in% top20_ind, Phylum, "Other"),
-    Phylum = factor(Phylum, levels = phylum_levels_ind),
-    Sample_Site = factor(Sample_Site, levels = c("Control", "Surgical")),
-    Day_Order = factor(Day_Order)
-  )
-  
-  local_cols <- phylum_colors[top20_ind]
-  missing_indices <- is.na(local_cols)
-  if(any(missing_indices)) {
-    fallback_pool <- brewer.pal(12, "Paired")
-    local_cols[missing_indices] <- sample(fallback_pool, sum(missing_indices), replace = TRUE)
-  }
-  values_ind <- c(local_cols, "Other" = "grey70")
-  
-  p <- ggplot(plot_df, aes(x = Day_Order, y = Abundance, fill = Phylum)) + 
-    geom_col(position = "stack", width = 0.7) +  
-    facet_wrap(~Sample_Site, nrow = 1) +          
-    scale_fill_manual(
-      values = values_ind,
-      breaks = phylum_levels_ind,
-      na.value = "black"
-    ) + 
-    theme_minimal() + 
-    theme(
-      axis.text.x = element_text(angle = 75, hjust = 1),
-      panel.spacing = unit(1.5, "lines")        
-    ) + 
-    labs(
-      title = paste0("Relative Abundance Across Timepoints by Phylum"),
-      subtitle = paste0("Dog: ", ind, " Sample Site: ", unique(plot_df$Sample_Site)),
-      x = "Timepoint",
-      y = "Relative Abundance"
-    )
-  print(p)
-}
-
- 
-# create color palette so genus is the same color across all individual dog plots 
-all_phyla <- tax_table(ps_rel_2)[, "Genus"] %>% as.vector() %>% unique() %>% na.omit() %>% sort()
-n_phyla <- length(all_phyla)
-base_cols <- brewer.pal(min(n_phyla, 12), "Paired")
-phylum_cols_vec <- colorRampPalette(base_cols)(n_phyla)
-phylum_colors <- setNames(phylum_cols_vec, all_phyla)
-
-# Generate per dog plots showing (top 10) phyla diversity across timepoints
-for (ind in individual_list) {
-  ps_ind <- subset_samples(ps_rel_2, Individual == ind)
-    plot_df <- psmelt(ps_ind) %>% 
-    filter(Sample_Site %in% c("Control", "Surgical")) %>% 
-    mutate(
-      Surgical_Location = unique(Sample_Location[Sample_Site == "Surgical" & !is.na(Sample_Location)])[1]
-    ) %>% 
-    mutate(Surgical_Location = factor(Surgical_Location))
-  
-  # Identify top 10 genus specific to this dog's profile
-  top20_ind <- plot_df %>% 
-    group_by(Genus) %>% 
-    summarise(Total_Abundance = sum(Abundance), .groups = "drop") %>% 
-    arrange(desc(Total_Abundance)) %>% 
-    slice_head(n = 10) %>% 
-    pull(Genus)
-  
-  phylum_levels_ind <- c(top20_ind, "Other")
-   
-  plot_df <- plot_df %>% mutate(
-    Genus = ifelse(Genus %in% top20_ind, Genus, "Other"),
-    Genus = factor(Genus, levels = phylum_levels_ind),
-    Sample_Site = factor(Sample_Site, levels = c("Control", "Surgical")),
-    Surgical_Location = factor(Surgical_Location, levels = c("Abdomen", "Stifle")),
-    Day_Order = factor(Day_Order)
-  )
-  
-  local_cols <- phylum_colors[top20_ind]
-  missing_indices <- is.na(local_cols)
-  if(any(missing_indices)) {
-    fallback_pool <- brewer.pal(12, "Paired")
-    local_cols[missing_indices] <- sample(fallback_pool, sum(missing_indices), replace = TRUE)
-  }
-  values_ind <- c(local_cols, "Other" = "grey70")
-  
-  p <- ggplot(plot_df, aes(x = Day_Order, y = Abundance, fill = Genus)) + 
-    geom_col(position = "stack", width = 0.7) +  
-    facet_wrap(~Sample_Site, nrow = 1) +          
-    scale_fill_manual(
-      values = values_ind,
-      breaks = phylum_levels_ind,
-      na.value = "black"
-    ) + 
-    theme_minimal() + 
-    theme(
-      axis.text.x = element_text(angle = 75, hjust = 1),
-      panel.spacing = unit(1.5, "lines")        
-    ) + 
-    labs(
-      title = paste0("Relative Abundance Across Timepoints by Genus"),
-      subtitle = paste0("Dog: ", ind, " Surgical Location: ", unique(plot_df$Surgical_Location)),
-      x = "Timepoint",
-      y = "Relative Abundance"
-    )
-  print(p)
-}
-```
+## Differential abundance at breakpoint
 
 ### Wilcoxen rank-sum test 
   * Admission vs Post Surgery: estimate = -0.1668, adj-p = 0.0436
@@ -1120,6 +789,7 @@ for (ind in individual_list) {
 # Keep only surgical samples
 surgical_samples <- metadata %>%
   filter(Sample_Site == "Surgical") %>%
+  filter(Sample_Location == "Stifle") %>%
   distinct(Individual, Day_Order, SampleID)
 
 surgical_sample_data <- metadata %>%
@@ -1153,46 +823,7 @@ dat <- otu %>%
   pivot_longer(-SampleID, names_to = "Taxon", values_to = "Abund") %>%
   left_join(meta_breakpoint, by = "SampleID")
 
-# Sum ASV abundances per Genus (within same dog + timepoint group)
-genus_dat <- dat %>% 
-  left_join(taxa_breakpoint2, by = "Taxon") %>% 
-  mutate(Genus = if_else(is.na(Genus) | Genus == "", "Unassigned", Genus)) %>% 
-  filter(Genus != "Unassigned") %>% 
-  mutate(Genus = as.factor(Genus)) %>% 
-  group_by(Individual, Day_Order, Sample_Site, Genus) %>% 
-  summarise(Genus_Abund = sum(Abund, na.rm = TRUE), .groups = "drop")
-
-wilcox_test <- genus_dat %>% 
-  tidyr::pivot_wider(
-    id_cols = c(SampleID, Genus),  
-    names_from = Day_Order, 
-    values_from = Genus_Abund
-  ) %>% 
-  mutate(
-    Control = as.numeric(Control),
-    Surgical = as.numeric(Surgical)
-  ) %>% 
-  group_by(Genus) %>% 
-  summarise(
-    n_pairs = n(),
-    stat = tryCatch(
-      wilcox.test(Control, Surgical, paired = TRUE, exact = FALSE)$statistic,
-      error = function(e) NA_real_
-    ),
-    p = tryCatch(
-      wilcox.test(Control, Surgical, paired = TRUE, exact = FALSE)$p.value,
-      error = function(e) NA_real_
-    ),
-    .groups = "drop"
-  ) %>% 
-  mutate(p_adj = p.adjust(p, method = "BH")) %>%
-  arrange(desc(stat))
-
-wilcox_test
-
-
-
-# Sum ASV abundances per Phylum (within same dog + timepoint group)
+# Sum ASV abundances per Phylum (within same dog + timepoint)
 Phylum_dat <- dat %>% 
   left_join(taxa_breakpoint2, by = "Taxon") %>% 
   mutate(Phylum = if_else(is.na(Phylum) | Phylum == "", "Unassigned", Phylum)) %>% 
@@ -1201,33 +832,41 @@ Phylum_dat <- dat %>%
   group_by(Individual, Day_Order, Sample_Site, Phylum) %>% 
   summarise(Phylum_Abund = sum(Abund, na.rm = TRUE), .groups = "drop")
 
-wilcox_test_phylum <- Phylum_dat %>% 
+wilcox_test <- Phylum_dat %>% 
   tidyr::pivot_wider(
-    id_cols = c(Individual, Day_Order, Phylum),  
-    names_from = Sample_Site, 
+    id_cols = c(Individual, Phylum),  
+    names_from = Day_Order, 
     values_from = Phylum_Abund
-  ) %>% 
-  mutate(
-    Control = as.numeric(Control),
-    Surgical = as.numeric(Surgical)
   ) %>% 
   group_by(Phylum) %>% 
   summarise(
-    n_pairs = n(),
+    n_pairs = sum(
+      !is.na(`Day 0c - Post Surgery`) & !is.na(Admission)
+    ),
     stat = tryCatch(
-      wilcox.test(Control, Surgical, paired = TRUE, exact = FALSE)$statistic,
+      wilcox.test(
+        `Day 0c - Post Surgery`,
+        Admission,
+        paired = TRUE,
+        exact = FALSE
+      )$statistic,
       error = function(e) NA_real_
     ),
     p = tryCatch(
-      wilcox.test(Control, Surgical, paired = TRUE, exact = FALSE)$p.value,
+      wilcox.test(
+        `Day 0c - Post Surgery`,
+        Admission,
+        paired = TRUE,
+        exact = FALSE
+      )$p.value,
       error = function(e) NA_real_
     ),
     .groups = "drop"
   ) %>% 
   mutate(p_adj = p.adjust(p, method = "BH")) %>%
-  arrange(desc(stat))
+  arrange((p_adj))
 
-wilcox_test_phylum
+wilcox_test
 ```
 
 ```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE}
