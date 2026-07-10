@@ -13,3 +13,5 @@ R_proj_files/
 01_filtered_ASV_tables/
 *.rds
 *.rda
+.RData
+.RDataTmp*
