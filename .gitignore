@@ -15,3 +15,7 @@ R_proj_files/
 *.rda
 .RData
 .RDataTmp*
+.RData
+.RDataTmp*
+*.html
+*_files/
