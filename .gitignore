@@ -19,3 +19,9 @@ R_proj_files/
 .RDataTmp*
 *.html
 *_files/
+.RData
+.RDataTmp*
+*.rda
+*.rds
+*.html
+*_files/
