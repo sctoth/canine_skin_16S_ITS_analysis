@@ -18,7 +18,7 @@ library(readr)
 
 # Import metadata file 
 ```{r, message=FALSE, warning=FALSE, echo=TRUE}
-dogskin_metadata_tsv <- read_tsv("../CH-All_16S_Metadata_20220124.tsv") %>%
+dogskin_metadata_tsv <- read_tsv("/Users/spencertoth/Desktop/Research/canine_skin_project/canine_skin_microbiome_R/01_input_files/metadata/CH-All_Metadata_20220124.tsv") %>%
   mutate(Collection_Cat = case_when(
     #Collection_Cat %in% c(3, 4) ~ "3-4",
     TRUE ~ as.character(Collection_Cat)
@@ -135,7 +135,7 @@ black_sep_y_full  <- c(bottom_line_y, black_sep_y)
 sample_y_pos      <- sort(unique(complete_grid$Y_Pos))
 
 # 60 labels: Surgical–Air–Control repeated for each dog (top→bottom)
-sample_labels <- rep(c("Control", "Air", "Surgical"), length(dog_order))
+sample_labels <- rep(c("Control", "Air", "Surgical"))
 
 # Left‑side labels with colors
 sample_df <- data.frame(
@@ -150,8 +150,22 @@ dog_labels <- paste0("Dog ", dog_sample_counts$Dog_ID, "\n(", dog_sample_counts$
 # Gray gridlines
 gray_grid_y <- sample_y_pos
 
-# === Construct the sampling regimen plot ===
-# === Fixed plot for categorical Collection_Cat ===
+complete_grid <- complete_grid %>%
+  filter(Collection_Cat %in% c(
+    "Admission", "Pre Surgery", "Post Surgery", "Day 1", "Day 3",
+    "Week 1", "Week 2", "Week 3", "Week 4", "Week 5", "Week 6"
+  )) %>%
+  mutate(
+    Collection_Cat = factor(
+      Collection_Cat,
+      levels = c(
+        "Admission", "Pre Surgery", "Post Surgery", "Day 1", "Day 3",
+        "Week 1", "Week 2", "Week 3", "Week 4", "Week 5", "Week 6"
+      )
+    )
+  ) 
+ 
+
 p <- ggplot(complete_grid, aes(x = Collection_Cat, y = Y_Pos)) +
 
   # 1. Background dog bars
@@ -178,7 +192,7 @@ p <- ggplot(complete_grid, aes(x = Collection_Cat, y = Y_Pos)) +
   # 5. Sample labels (fixed x position)
   geom_text(data = sample_df, inherit.aes = FALSE,
             aes(y = y, label = label), 
-            x = -2,  # Left of categorical axis
+            x = -3,  # Left of categorical axis
             hjust = 0.5, size = 6, color = "black", fontface = "bold") +
 
   # 6. Fill scale (unchanged)
@@ -239,6 +253,82 @@ print(p)
 ggsave("16S_dog_sampling_regimen.png", p, width = PLOT_WIDTH, height = PLOT_HEIGHT, dpi = 300)
 
 
+p <- ggplot(complete_grid, aes(x = Y_Pos, y = Collection_Cat)) +
+
+  geom_rect(
+    data = dog_bars, inherit.aes = FALSE,
+    aes(ymin = xmin, ymax = xmax, xmin = Y_Base, xmax = Y_Top, fill = Bar_Color),
+    alpha = 0.3, size = 0.5
+  ) +
+
+  geom_vline(data = data.frame(xintercept = gray_grid_y),
+             aes(xintercept = xintercept), color = "gray80", size = 0.4) +
+  geom_vline(data = data.frame(xintercept = black_sep_y_full),
+             aes(xintercept = xintercept), color = "black", size = 1.0) +
+
+  geom_point(aes(fill = Dot_Color), shape = 21, size = POINT_SIZE,
+             stroke = 0.8, color = "gray") +
+
+  scale_x_continuous(
+    breaks = seq(1, (length(dog_order) - 1) * 3 + 1, 3),
+    labels = dog_labels,
+    name = ""
+  ) +
+
+  geom_text(
+    data = sample_df, inherit.aes = FALSE,
+    aes(x = y, label = label),
+    y = -1,
+    hjust = 0.5, size = 6, color = "black", fontface = "bold"
+  ) +
+
+  scale_fill_manual(
+    name = "Surgery / Sample Type",
+    values = c("orange" = "orange", "pink" = "pink",
+               "blue" = "blue", "limegreen" = "limegreen",
+               "purple" = "purple", "white" = "white"),
+    labels = c("orange" = "Abdomen", "pink" = "Stifle",
+               "blue" = "Surgical", "limegreen" = "Air",
+               "purple" = "Control", "white" = "Missing")
+  ) +
+
+  #scale_y_discrete(name = "Collection Day") +
+
+  labs(title = "Sampling Regimen") +
+  theme_bw(base_size = 12) +
+  theme(
+    legend.position = "right",
+    legend.key.size = unit(1.2, "cm"),
+    legend.text = element_text(size = 18),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "gray90", size = 0.3),
+
+    axis.text.x = element_text(
+      angle = 90,
+     # hjust = 0.1,
+      size = 20,
+      face = "bold",
+      margin = margin(t = 25)
+    ),
+
+    axis.text.y = element_text(
+      angle = 90,
+      hjust = 0.5,
+     vjust = 0.5,
+      size = 15
+    ),
+
+    plot.margin = margin(30, 30, 30, 30, "pt"),
+    plot.title = element_text(size = 25, face = "bold", hjust = 0.5)
+  ) +
+  coord_cartesian(
+    xlim = c(-0.5, max(black_sep_y_full) - 2),
+    ylim = c(0.8, length(levels(complete_grid$Collection_Cat)) + 0.2)
+  )
+
+print(p)
+
+ggsave("16S_dog_sampling_regimen.png", p, width = PLOT_WIDTH, height = PLOT_HEIGHT, dpi = 300)
 ```
 
 
