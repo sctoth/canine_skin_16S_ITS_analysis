@@ -25,3 +25,6 @@ R_proj_files/
 *.rds
 *.html
 *_files/
+
+02_output_files/
+*.png
