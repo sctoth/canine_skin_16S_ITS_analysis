@@ -1,0 +1,826 @@
+---
+title: "Canine Skin Microbiome: Microbial Diversity Analysis "
+author: "Spencer Toth"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+  pdf_document: default
+---
+
+**Purpose:**
+Analyze microbial diversity within and across timepoints, comparing control and surgical skin sites. 
+    
+# Load R Packages
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+library("knitr")
+library("FSA")
+library("tidyverse")
+library("vegan")
+library("phyloseq")
+library("ggplot2")
+library("ggtree")
+library("scales") # Crucial for label_comma() and log_breaks() to work
+library(RColorBrewer)
+library(segmented)
+set.seed(100)
+```
+
+# Create phyloseq objects
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+load("../02_output_files/01_filtered_ASV_tables/CH1_filtered_canine_skin_microbiome.rda")
+
+ps1 <- phyloseq(otu_table(ASV_feature_table_decontam, taxa_are_rows=FALSE), 
+               sample_data(sample_metadata_decontam), 
+               tax_table(taxa_annotations_decontam))
+ ps1 <- prune_samples(
+  grepl("Skin", sample_data(ps1)$Location_Type),
+  ps1
+)
+load("../02_output_files/01_filtered_ASV_tables/CH2_filtered_canine_skin_microbiome.rda")
+
+ps2 <- phyloseq(otu_table(ASV_feature_table_decontam, taxa_are_rows=FALSE), 
+               sample_data(sample_metadata_decontam), 
+               tax_table(taxa_annotations_decontam))
+ ps2 <- prune_samples(
+  grepl("Skin", sample_data(ps2)$Location_Type),
+  ps2
+)
+load("../02_output_files/01_filtered_ASV_tables/CH3_filtered_canine_skin_microbiome.rda")
+
+ps3 <- phyloseq(otu_table(ASV_feature_table_decontam, taxa_are_rows=FALSE), 
+               sample_data(sample_metadata_decontam), 
+               tax_table(taxa_annotations_decontam))
+ ps3 <- prune_samples(
+  grepl("Skin", sample_data(ps3)$Location_Type),
+  ps3
+)
+load("../02_output_files/01_filtered_ASV_tables/CH4_filtered_canine_skin_microbiome.rda")
+
+ps4 <- phyloseq(otu_table(ASV_feature_table_decontam, taxa_are_rows=FALSE), 
+               sample_data(sample_metadata_decontam), 
+               tax_table(taxa_annotations_decontam))
+  ps4 <- prune_samples(
+  grepl("Skin", sample_data(ps4)$Location_Type),
+  ps4
+)
+ps <- merge_phyloseq(ps1, ps2, ps3, ps4)
+ps <- prune_samples(
+  grepl("Skin", sample_data(ps)$Location_Type),
+  ps
+)
+```
+
+# ASVs with Unknown Phylum
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+otu_matrix <- as(otu_table(ps), "matrix")
+if (taxa_are_rows(ps)) {
+  otu_matrix <- t(otu_matrix)
+}
+
+# First get total ASVs per plate
+total_asvs_per_plate <- data.frame(
+  Sample_Plate = sample_data(ps)$Sample_Plate,
+  as.data.frame(otu_matrix)
+) %>%
+  group_by(Sample_Plate) %>%
+  summarise(
+    Total_ASVs = sum(colSums(across(-where(is.character))) > 0),
+    .groups = "drop"
+  )
+
+
+unknown_asvs <- rownames(tax_table(ps))[
+  is.na(tax_table(ps)[, "Phylum"]) | tax_table(ps)[, "Phylum"] %in% c("", "uncharacterized")
+]
+
+otu_matrix <- as(otu_table(ps), "matrix")
+if (taxa_are_rows(ps)) {
+  otu_matrix <- t(otu_matrix)
+}
+
+otu_unknown <- otu_matrix[, unknown_asvs, drop = FALSE]
+
+# Then get unknown ASVs per plate and calculate percentage
+out <- data.frame(
+  Sample_Plate = sample_data(ps)$Sample_Plate,
+  as.data.frame(otu_unknown)
+) %>%
+  group_by(Sample_Plate) %>%
+  summarise(
+    Unknown_ASVs_Count = sum(colSums(across(-where(is.character))) > 0),
+    .groups = "drop"
+  ) %>%
+  # Join with total ASVs
+  left_join(total_asvs_per_plate, by = "Sample_Plate") %>%
+  mutate(
+    Percent_Removed = 100 * Unknown_ASVs_Count / Total_ASVs
+  )
+
+print(out)
+ 
+
+# Remove ASVs with unknown Phyla
+ps_1 <- subset_taxa(ps, !is.na(Phylum) & !Phylum %in% c("", "uncharacterized"))
+ 
+
+# Extract sample metadata
+meta <- as(sample_data(ps_1), "data.frame")
+
+# Count unique samples by Day_Order and Sample_Site
+count_df <- meta %>%
+  dplyr::select(Day_Order, Sample_Site, Sample_Unique) %>%
+  distinct() %>%
+  group_by(Day_Order, Sample_Site) %>%
+  summarise(n = n(), .groups = "drop")
+
+# Set the desired order for Day_Order
+day_levels <- c(
+  "Admission",
+  "Day 0a - Pre Surgery",
+  "Day 0c - Post Surgery",
+  "Day 1",
+  "Day 3",
+  "Week 1",
+  "Week 2",
+  "Week 3",
+  "Week 4",
+  "Week 5",
+  "Week 6"
+)
+
+count_df$Day_Order <- factor(count_df$Day_Order, levels = day_levels)
+
+# Optional: set Sample_Site order
+count_df$Sample_Site <- factor(count_df$Sample_Site, levels = c("Control", "Surgical"))
+
+# Plot
+p <- ggplot(count_df, aes(x = Day_Order, y = n, fill = Sample_Site)) +
+  geom_col(position = position_dodge(width = 0.75), width = 0.75) +
+  geom_text(
+    aes(label = n),
+    position = position_dodge(width = 0.75),
+    vjust = -0.3,
+    size = 3.5
+  ) +
+  scale_fill_manual(values = c("Control" = "blue", "Surgical" = "purple")) +
+  labs(
+    x = "Day Order",
+    y = "Number of Samples",
+    fill = "Sample Site"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right"
+  )
+
+print(p)
+
+# Check which dogs are missing samples (either control or surgical) at each timepoint
+missing_sample_unique <- sample_check %>%
+  group_by(Individual, Day_Order) %>%
+  summarise(
+    site_absent = if (all(c("Control", "Surgical") %in% Sample_Site)) NA_character_
+                  else paste(setdiff(c("Control", "Surgical"), unique(Sample_Site)), collapse = ", "),
+    Sample_Unique = paste(sort(unique(Sample_Unique)), collapse = ", "),
+    n_sites = n_distinct(Sample_Site),
+    .groups = "drop"
+  ) %>%
+  filter(n_sites < 2) %>%
+  select(Individual, Day_Order, site_absent, Sample_Unique)
+
+print(missing_sample_unique)
+
+
+# extract sample data as data.frame
+meta <- as(sample_data(ps_1), "data.frame")
+
+# keep only samples that have control and surgical at each Day_Order
+paired_groups <- meta %>%
+  group_by(Individual, Day_Order) %>%
+  summarize(n_sites = n_distinct(Sample_Site), .groups = "drop") %>%
+  filter(n_sites == 2) %>%
+  transmute(Individual, Day_Order)
+filtered_meta <- meta %>%
+  inner_join(paired_groups, by = c("Individual", "Day_Order"))
+
+sample_data(ps_1)
+nrow(sample_data(ps_1))
+#prune phyloseq onject so it only contains these remaining samples 
+ps_1 <- prune_samples(filtered_meta$SampleID, ps_1)
+nrow(sample_data(ps_1))
+
+# Count unique samples by Day_Order and Sample_Site
+count_df <- filtered_meta %>%
+  dplyr::select(Day_Order, Sample_Site, Sample_Unique) %>%
+  distinct() %>%
+  group_by(Day_Order, Sample_Site) %>%
+  summarise(n = n(), .groups = "drop")
+
+
+count_df$Day_Order <- factor(count_df$Day_Order, levels = day_levels)
+
+# Optional: set Sample_Site order
+count_df$Sample_Site <- factor(count_df$Sample_Site, levels = c("Control", "Surgical"))
+
+# Plot
+p <- ggplot(count_df, aes(x = Day_Order, y = n, fill = Sample_Site)) +
+  geom_col(position = position_dodge(width = 0.75), width = 0.75) +
+  geom_text(
+    aes(label = n),
+    position = position_dodge(width = 0.75),
+    vjust = -0.3,
+    size = 3.5
+  ) +
+  scale_fill_manual(values = c("Control" = "blue", "Surgical" = "purple")) +
+  labs(
+    x = "Day Order",
+    y = "Number of Samples",
+    fill = "Sample Site"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right"
+  )
+
+print(p)
+```
+
+```{r, fig.width=11, fig.height=8}
+
+# Compute prevalence of each feature, store as data.frame
+prevdf = apply(X = otu_table(ps_1),
+               MARGIN = ifelse(taxa_are_rows(ps_1), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+ 
+# Add taxonomy and total read counts to this data.frame
+prevdf = data.frame(Prevalence = prevdf,
+                    TotalAbundance = taxa_sums(ps_1),
+                    tax_table(ps_1))
+
+# Are there phyla that are comprised of mostly low-prevalence features? Compute the total and average prevalences of the features in each phylum.
+plyr::ddply(prevdf, "Phylum", function(df1){cbind(mean(df1$Prevalence),sum(df1$Prevalence))})
+ggplot(prevdf1, aes(TotalAbundance, Prevalence / nsamples(ps_1),color=Phylum)) +
+  ggtitle("Prevalence of Phyla Across Skin-Swab Samples") +
+  geom_hline(yintercept = 0.05, alpha = 0.5, linetype = 2) +  geom_point(size = 2, alpha = 0.7) +
+  scale_x_log10() +  xlab("Total Abundance") + ylab("Prevalence [Frac. Samples]") +
+  facet_wrap(~Phylum) + theme(legend.position="none")
+```
+ 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+out_dir <- "../02_output_files/02_image_files"
+
+# Get reads and metadata per sample
+reads_per_sample <- sample_sums(ps_1)
+md <- as(sample_data(ps_1), "data.frame")
+ 
+sample_names_ps <- sample_names(ps_1)
+
+# Ensure sample order matches
+if (!all(sample_names_ps == rownames(md))) {
+  md <- md[sample_names_ps, ]
+}
+
+# Create dataframe with sample-level stats
+df <- data.frame(
+  sample = sample_names_ps,
+  total_reads = reads_per_sample,
+  Sample_Plate = md$Sample_Plate,
+  Individual = md$Individual,
+  stringsAsFactors = FALSE
+)
+
+# Calculate total ASVs per sample
+# 1. Calculate total ASVs and total reads
+otu <- otu_table(ps_1)
+if (taxa_are_rows(otu)) {
+  total_asvs <- colSums(otu > 0)
+} else {
+  total_asvs <- rowSums(otu > 0)
+}
+
+total_reads <- sample_sums(ps_1)
+
+# 2. Extract metadata, append columns, and reassign
+ 
+md$total_asv <- total_asvs
+md$total_reads <- total_reads
+
+sample_data(ps_1) <- sample_data(md)
+
+# Aggregate reads and ASVs per Individual (summing across all samples from that Individual)
+by_ind <- aggregate(
+  cbind(total_reads, total_asv) ~ Individual + Sample_Plate,
+  data = md,
+  FUN = sum
+)
+
+# Boxplot for total reads by Sample_Plate (each point = one Individual)
+p_reads <- ggplot(by_ind, aes(x = Sample_Plate, y = total_reads, fill = Sample_Plate)) +
+  geom_boxplot() +
+  scale_y_continuous(
+    labels = function(x) paste0(x / 1000, "K"),
+    name = "Total Reads (per Individual, in thousands)"
+  ) +
+  labs(
+    title = "Total Reads per Individual by Sample Plate",
+    x = "Sample Plate"
+  ) +
+  theme_minimal()
+
+out_reads <- paste0(out_dir, "/total_reads_by_sample_plate.png")
+ggplot2::ggsave(out_reads, p_reads, width = 8, height = 6)
+p_reads
+# Boxplot for total ASVs by Sample_Plate (each point = one Individual)
+p_asv <- ggplot(by_ind, aes(x = Sample_Plate, y = total_asv, fill = Sample_Plate)) +
+  geom_boxplot() +
+  scale_y_continuous(
+    labels = function(x) paste0(x / 1000, "K"),
+    name = "Total ASVs (per Individual, in thousands)"
+  ) +
+  labs(
+    title = "Total ASVs per Individual by Sample Plate",
+    x = "Sample Plate"
+  ) +
+  theme_minimal()
+p_asv
+out_asv <- paste0(out_dir, "/total_asvs_by_sample_plate.png")
+ggplot2::ggsave(out_asv, p_asv, width = 8, height = 6)
+
+# Print summary to verify - each row is one Individual
+print(by_ind)
+
+
+
+
+```
+# Beta-diversity: Bray-Curtis Distance Matrix, PCoA, PERMANOVA
+
+## Identifying sequencing run batch-effects
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+set.seed(100)
+ps_rel <- transform_sample_counts(ps_1, function(x) x / sum(x)) 
+
+# Calculate bray-curtis distance matrix on samples using ASV relative abundances
+metadata <- data.frame(sample_data(ps_rel))
+bray_dist <- phyloseq::distance(ps_rel, method = "bray")
+# generate PCoA using the sample distance matrix
+bray_pcoa <- ordinate(physeq = ps_rel, method = "PCoA", distance = bray_dist)
+
+print("How different are the centroids of the clusters formed by samples within the same sequencing run?")
+# Color samples by Sequencing Run
+p1 <- plot_ordination(ps_rel, bray_pcoa, color = "Sample_Plate")
+p1 + ggtitle("PCoA of Beta-Diversity (Bray-Curtis)") +
+  geom_point(size = 1.5) + 
+  theme_bw() +
+  stat_ellipse(aes(fill = Sample_Plate, group = Sample_Plate), alpha = 0.2, geom = "polygon")
+# PERMANOVA test for significant differences amongst sequencing runs 
+adonis2(bray_dist ~ Sample_Plate, data = metadata, permutations = 999)
+
+
+print("Within a cluster what is the average distance to the centroid?")
+# Distance of each 16S sample to its sequencing batch centroid 
+# Method = PERMDISP2 (multivariate analogue of Levene's test)
+betadisper_result <- betadisper(bray_dist, group = metadata$Sample_Plate)
+
+# Extract the PCoA coordinates and centroids
+df_points <- as.data.frame(scores(betadisper_result, display = "sites"))
+df_points$Sample_Plate <- metadata$Sample_Plate
+
+df_centroids <- as.data.frame(scores(betadisper_result, display = "centroids"))
+df_centroids$Sample_Plate <- rownames(df_centroids)
+
+ggplot(df_points, aes(x = PCoA1, y = PCoA2, color = Sample_Plate)) +
+  geom_segment(data = merge(df_points, df_centroids, by = "Sample_Plate", suffixes = c("", ".cen")),
+               aes(xend = PCoA1.cen, yend = PCoA2.cen), alpha = 0.5) +
+  geom_point(size = 2) +
+  geom_point(data = df_centroids, size = 5, shape = 17) + 
+  stat_ellipse(aes(fill = Sample_Plate, group = Sample_Plate), alpha = 0.1, geom = "polygon", color = NA) +
+  ggtitle("PCoA of Beta-Diversity (Bray-Curtis) with Centroids") +
+  theme_bw()
+
+print("What are the pairwise differences between the libraries?")
+average_by_plate <- data.frame(
+  Plate = metadata$Sample_Plate,
+  Dist_to_Centroid = betadisper_result$distances
+)
+
+average_by_plate_table <- average_by_plate %>%
+  group_by(Plate) %>%
+  summarize(
+    Mean_Dist = mean(Dist_to_Centroid, na.rm = TRUE),
+    SD_Dist   = sd(Dist_to_Centroid, na.rm = TRUE),
+    CV_Percent = (SD_Dist / Mean_Dist *100) 
+  )
+
+print(average_by_plate_table)
+
+
+# Permutation test for significance
+permutest(betadisper_result, permutations = 999)
+
+# SEq Run Pairwise Post-hoc comparisons
+TukeyHSD(betadisper_result)
+```
+
+## Relative Abundance (surgical site)
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+ps_rel_surgical <- subset_samples(ps_rel, Sample_Site == "Surgical")
+ps_1_surgical <- subset_samples(ps_1, Sample_Site == "Surgical")
+# 2. Get a unique list of all individuals in your dataset
+individual_list <- unique(sample_data(ps_rel_surgical)$Individual)
+
+# Get all phyla in your object (no Other here)
+all_phyla <- tax_table(ps_rel_surgical)[, "Phylum"] %>%
+  as.vector() %>% 
+  unique() %>%
+  sort()
+
+# Choose colors (expand palette if needed)
+n_phyla <- length(all_phyla)  
+base_cols <- brewer.pal(min(n_phyla, 12), "Paired")
+phylum_cols_vec <- colorRampPalette(base_cols)(n_phyla)
+
+# Named palette for real phyla (no Other)
+phylum_levels <- all_phyla
+phylum_colors <- setNames(phylum_cols_vec, phylum_levels)
+
+for (ind in individual_list) {
+  
+  ps_sub <- subset_samples(ps_rel_surgical, Individual == ind)
+  
+  plot_df <- psmelt(ps_sub) %>%
+    group_by(Day_Order, Phylum) %>%
+    summarise(Abundance = sum(Abundance), .groups = "drop")
+  
+  # top 20 Phylum within this individual
+  top20_ind <- plot_df %>%
+    group_by(Phylum) %>%
+    summarise(Total_Abundance = sum(Abundance), .groups = "drop") %>%
+    arrange(desc(Total_Abundance)) %>%
+    slice_head(n = 20) %>%
+    pull(Phylum)
+  
+  # collapse others into "Other"
+  phylum_levels_ind <- c(top20_ind, "Other")
+  
+  plot_df <- plot_df %>%
+    mutate(
+      Phylum = ifelse(Phylum %in% top20_ind, Phylum, "Other"),
+      Phylum = factor(Phylum, levels = phylum_levels_ind)
+    )
+  
+  # colors for this individual: top20 from global palette + "Other" as gray
+  values_ind <- c(
+    phylum_colors[top20_ind],    # named vector for the top20
+    "Other" = "grey70"           # force Other to gray
+  )
+  
+  p <- ggplot(plot_df, aes(x = Day_Order, y = Abundance, fill = Phylum)) +
+    geom_col() +
+    scale_fill_manual(
+      values = values_ind,
+      breaks = phylum_levels_ind,   # legend order = top20 then Other
+      na.value = "black"            # if any NA in Phylum, show as black
+    ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(title = paste0("Top 20 Phyla Across Timepoints for Dog: ", ind))
+  
+  print(p)
+}
+ 
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE}
+ 
+## Merge rooted tree to phyloseq object  
+# Unifrac distance matrix 
+# Create random tree matching the taxa names
+random_tree <- rtree(ntaxa(ps_rel), rooted = TRUE, tip.label = taxa_names(ps))
+plot(random_tree)
+
+# Merge tree into the phyloseq object
+ps_2 <- merge_phyloseq(ps_rel, random_tree)
+ps_2
+
+# Calculate weighted UniFrac distance matrix 
+dist_unifrac_2 <- phyloseq::distance(ps_2, method = "wunifrac")
+
+# Run PCoA using the distance matrix
+uni_2 <- ordinate(physeq = ps_2, method = "PCoA", distance = dist_unifrac_2)
+```
+
+# Alpha-diversity 
+
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE}
+# 1. Filter and prepare the alpha diversity data frame
+alphadiv_plot_data <- estimate_richness(ps_1, measures = "Shannon") %>% 
+  rownames_to_column(var = "SampleID") %>% 
+  left_join(as.data.frame(sample_data(ps_1)), by = "SampleID")
+
+# 2. Generate the faceted dot plot for each individual dog
+ggplot(alphadiv_plot_data, aes(x = factor(Day_Order), y = Shannon, color = Sample_Site, group = Individual)) +
+  geom_point(size = 1) +
+  geom_line() + # Optional: connects the dots chronologically for each dog
+  facet_wrap(~ Individual) + 
+  scale_color_manual(values = c("Control" = "purple", "Surgical" = "blue")) + 
+  theme_bw() + 
+  labs(
+    title = "Shannon Diversity Across Timepoints per Dog", 
+    x = "Timepoint (Day Order)", 
+    y = "Shannon Index",
+    color = "Sample Site"
+  ) +
+  theme(axis.text.x = element_text(angle = 90))
+
+ 
+plot_richness(ps_1, 
+              x = "Day_Order", 
+              measures = "Shannon") + 
+  geom_boxplot(aes(fill = Sample_Site), show.legend = TRUE) +
+  facet_grid(. ~ Sample_Site) + # Adjusted facet since there is only 1 metric now
+  scale_fill_manual(values = c("Control" = "purple", "Surgical" = "blue")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  labs(title = "Shannon Diversity",
+       x = "Timepoint",
+       fill = "Sample Site")
+
+# Alpha diversity across timepoints for the Control Groups 
+alphadiv <- estimate_richness(ps_1, measures = c("Shannon")) %>%
+  rownames_to_column(var = "SampleID") %>%
+  left_join(as.data.frame(sample_data(ps_1)), by = "SampleID")  %>% 
+  filter(Sample_Site == "Control")  
+
+kruskal.test(Shannon ~ Day_Order, data = alphadiv)
+ 
+dunnS <- dunnTest(Shannon ~ Day_Order,
+                  data=alphadiv,
+                  method="bh")
+ dunnS
+ 
+# Alpha diversity across timepoints for the Surgery Groups 
+alphadiv <- estimate_richness(ps_1, measures = c("Shannon")) %>%
+  rownames_to_column(var = "SampleID") %>%
+  left_join(as.data.frame(sample_data(ps_1)), by = "SampleID")  %>% 
+  filter(Sample_Site == "Surgical") 
+
+kruskal.test(Shannon ~ Day_Order, data = alphadiv)
+ 
+dunnS <- dunnTest(Shannon ~ Day_Order,
+                  data=alphadiv,
+                  method="bh")
+ dunnS
+ 
+```
+
+# Model Changes in Pairwise Bray-Curtis Dissimilarities between Control and Surgical Skin Site Across Timepoints  
+```{r, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
+md <- as(sample_data(ps_1), "data.frame")
+
+bray_mat <- as.matrix(bray_dist)
+paired_distances <- md %>%
+  group_by(Dog_ID, Day_Order) %>%
+  filter(all(c("Control", "Surgical") %in% Sample_Site)) %>%
+  ungroup() %>%
+  group_by(Dog_ID, Day_Order) %>%
+  summarise(
+    Control_Sample = SampleID[Sample_Site == "Control"][1],
+    Surgical_Sample = SampleID[Sample_Site == "Surgical"][1],
+    Bray_Distance = bray_mat[Control_Sample, Surgical_Sample],
+    Sample_Plate = Sample_Plate[1],
+    .groups = "drop"
+  )
+
+print(paired_distances)
+
+# Calculate average distance per Dog_ID for each Day_Order
+avg_distances_by_dog <- paired_distances %>%
+  group_by(Dog_ID, Day_Order) %>%
+  summarise(
+    Avg_Bray_Distance = mean(Bray_Distance),
+    Sample_Plate = Sample_Plate,
+   # total_reads = sum(total_reads),
+    .groups = "drop"
+  )
+
+# Print the results
+print(avg_distances_by_dog)
+
+# Create box-and-whisker plot across Day_Orders
+ggplot(data = avg_distances_by_dog, 
+       aes(x = Day_Order, y = Avg_Bray_Distance)) +
+  geom_boxplot(fill = "darkgreen") +
+  geom_jitter(width = 0.15, alpha = 0.6, color = "darkgreen") +
+  labs(
+    title = "Average Bray-Curtis Distance by Day Order",
+    x = "Day Order",
+    y = "Average Bray Distance"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12)
+  )
+
+avg_distances_by_dog <- avg_distances_by_dog %>%
+  mutate(
+    Day_Order = case_when(
+      Day_Order == "Admission" ~ -2,           # No quotes!
+      Day_Order == "Day 0a - Pre Surgery" ~ -1,
+      Day_Order == "Day 0c - Post Surgery" ~ 0,
+      Day_Order == "Day 1" ~ 1,
+      Day_Order == "Day 3" ~ 3,
+      Day_Order == "Week 1" ~ 7,
+      Day_Order == "Week 2" ~ 14,
+      Day_Order == "Week 3" ~ 21,
+      Day_Order == "Week 4" ~ 28,
+      Day_Order == "Week 5" ~ 35,
+      Day_Order == "Week 6" ~ 42,
+      TRUE ~ NA_real_  # Handle any unmatched values
+    )
+  )
+
+library(lme4)
+
+lmm <- lmer(Avg_Bray_Distance ~ Day_Order + Sample_Plate + (1 | Dog_ID),
+            data = avg_distances_by_dog)
+summary(lmm)
+os <- segmented(lm_model, seg.Z = ~Day_Order)
+summary(os)
+confint(os)
+
+plot(avg_distances_by_dog$Day_Order, avg_distances_by_dog$Avg_Bray_Distance,
+     xlab = "Day Number (relative to surgery)", 
+     ylab = "Average Bray Distance",
+     main = "Segmented Regression: Bray Distance Over Time")
+points(avg_distances_by_dog$Day_Order, avg_distances_by_dog$Avg_Bray_Distance, pch = 19, col = "blue")
+
+pred_vals <- predict(os)
+lines(avg_distances_by_dog$Day_Order, pred_vals, col = "red", lwd = 2)
+
+
+
+library(dplyr)
+library(ggplot2)
+md <- as(sample_data(ps_1), "data.frame")
+# Step 1: Create a NEW column for the character labels (don't overwrite Day_Order)
+md <- md %>%
+  mutate(
+    Day_Order = case_when(
+      Day_Order == -2 ~ "Admission",
+      Day_Order == -1 ~ "Pre_Surgery",
+      Day_Order == 0 ~ "Post_Surgery",
+      Day_Order == 1 ~ "Day_1",
+      Day_Order == 3 ~ "Day_3",
+      Day_Order == 7 ~ "Week_1",
+      Day_Order == 14 ~ "Week_2",
+      Day_Order == 21 ~ "Week_3",
+      Day_Order == 28 ~ "Week_4",
+      Day_Order == 35 ~ "Week_5",
+      Day_Order == 42 ~ "Week_6",
+      TRUE ~ as.character(Day_Order)
+    )
+  )
+
+# Step 2: Create paired_distances using the numeric Day_Order (for regression)
+paired_distances <- md %>%
+  group_by(Dog_ID, Day_Order) %>%
+  filter(all(c("Control", "Surgical") %in% Sample_Site)) %>%
+  ungroup() %>%
+  group_by(Dog_ID, Day_Order) %>%
+  summarise(
+    Control_Sample = SampleID[Sample_Site == "Control"][1],
+    Surgical_Sample = SampleID[Sample_Site == "Surgical"][1],
+    Bray_Distance = bray_mat[Control_Sample, Surgical_Sample],
+    Sample_Plate = Sample_Plate[1],
+    Day_Order = Day_Order[1],  # Add the character label
+    .groups = "drop"
+  )
+
+# Step 3: Calculate average distance per Dog_ID for each Day_Order (numeric)
+avg_distances_by_dog <- paired_distances %>%
+  group_by(Dog_ID, Day_Order) %>%
+  summarise(
+    Avg_Bray_Distance = mean(Bray_Distance),
+    Sample_Plate = Sample_Plate,
+    Day_Order = Day_Order[1],
+    .groups = "drop"
+  )
+
+# Step 4: Perform pairwise t-tests using the character Day_Order
+alpha <- 0.10
+
+pairwise_results <- pairwise.t.test(
+  Avg_Bray_Distance, 
+  Day_Order,  # Use character labels for t-test
+  data = avg_distances_by_dog,
+  p.adjust.method = "none",
+  alternative = "two.sided"
+)
+
+# Print results
+print(pairwise_results)
+
+# Convert to tidy format for easy reading
+pairwise_df <- pairwise_results$p.value
+
+pairwise_tidy <- pairwise_df %>%
+  as.data.frame() %>%
+  mutate(Group1 = rownames(pairwise_df)) %>%
+  tidyr::pivot_longer(
+    cols = -Group1,
+    names_to = "Group2",
+    values_to = "p_value"
+  ) %>%
+  filter(Group1 < Group2) %>%
+  mutate(
+    Significant = ifelse(p_value <= alpha, "Yes", "No"),
+    p_value = round(p_value, 4),
+    Stars = case_when(
+      p_value <= 0.01 ~ "**",
+      p_value <= 0.05 ~ "*",
+      p_value <= alpha ~ ".",
+      TRUE ~ ""
+    )
+  )
+
+print(pairwise_tidy)
+
+# Show group means
+print("Group means by Day_Order:")
+print(avg_distances_by_dog %>%
+  group_by(Day_Order) %>%
+  summarise(
+    Mean_Bray = mean(Avg_Bray_Distance),
+    SD_Bray = sd(Avg_Bray_Distance),
+    N = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(match(Day_Order, c("Admission", "Pre_Surgery", "Post_Surgery", "Day_1", "Day_3", "Week_1", "Week_2", "Week_3", "Week_4", "Week_5", "Week_6"))))
+
+# Get detailed results as a table
+pairwise_df <- pairwise_results$p.value
+
+# Convert to tidy format with comparisons
+pairwise_tidy <- pairwise_df %>%
+  as.data.frame() %>%
+  mutate(Group1 = rownames(pairwise_df)) %>%
+  tidyr::pivot_longer(
+    cols = -Group1,
+    names_to = "Group2",
+    values_to = "p_value"
+  ) %>%
+  filter(Group1 < Group2) %>%  # Remove duplicates and self-comparisons
+  mutate(
+    Significant = ifelse(p_value <= alpha, "Yes", "No"),
+    p_value = round(p_value, 4)
+  )
+
+print(pairwise_tidy)
+
+# Add significance stars
+pairwise_tidy <- pairwise_tidy %>%
+  mutate(
+    Stars = case_when(
+      p_value <= 0.01 ~ "**",
+      p_value <= 0.05 ~ "*",
+      p_value <= alpha ~ ".",
+      TRUE ~ ""
+    )
+  )
+
+print(pairwise_tidy)
+# Create comparison table with effect sizes
+comparison_table <- avg_distances_by_dog %>%
+  group_by(Day_Order) %>%
+  summarise(
+    Mean_Bray = mean(Avg_Bray_Distance),
+    SD_Bray = sd(Avg_Bray_Distance),
+    N = n(),
+    .groups = "drop"
+  )
+
+print(comparison_table)
+
+# Plot with pairwise significance
+ggplot(avg_distances_by_dog, aes(x = Day_Order, y = Avg_Bray_Distance)) +
+  geom_boxplot(fill = "lightblue", outlier.alpha = 0.3) +
+  geom_jitter(width = 0.15, alpha = 0.4, color = "darkblue") +
+  labs(
+    title = "Bray Distance by Day Order",
+    x = "Day Order",
+    y = "Average Bray Distance"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
+sessionInfo()
+```
