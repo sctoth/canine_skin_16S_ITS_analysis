@@ -1,5 +1,5 @@
 ---
-title: "Dog Skin Microbiome Sequencing QC Report"
+title: "ITS: Dog Skin Microbiome Sequencing QC Report"
 author: "Spencer Toth"
 date: "`r Sys.Date()`"
 output: 
@@ -37,26 +37,55 @@ library(cowplot)
 ```{r summary-table-individual, echo=FALSE}
 
 # Load and combine all data SAFELY
-all_data <- read.csv("/Users/spencertoth/Desktop/Research/canine_skin_project/canine_skin_microbiome_R/01_input_files/dada2_results/seqruns_final_summary_read_counts.csv")
-sample_metadata_og <- read.delim("/Users/spencertoth/Desktop/Research/canine_skin_project/canine_skin_microbiome_R/01_input_files/metadata/CH-All_Metadata_20220124.tsv", header=TRUE)
+all_data <- read.csv("/Users/spencertoth/Desktop/Research/canine_skin_project/canine_skin_microbiome_R/ITS/02_input_files/csv_files/seqruns_final_summary_read_counts.csv")
+sample_metadata_og <- read.delim("/Users/spencertoth/Desktop/Research/canine_skin_project/canine_skin_microbiome_R/metadata/CH-All_ITS_Metadata_20220124.tsv", header=TRUE)
+
 
 all_data <- all_data %>% 
   rename(
     Sample      = sample,
     Individual = Individual,
     Total_Reads    = Raw_Sum,
+    No_Ns = No_Ns_Sum,
+    No_Primers = No_Primers_Sum,
     Trimmed_Reads  = Trimmed_Sum,
-    Truncated_Reads = Trunc_Sum,
-    denoised_forward = denoised_forward,
-    denoised_reverse = denoised_reverse,
-    Denoised = denoised_total,
-    Merged_Pairs = merged_reads,
+    denoised_forward = denoised_reads,
     No_Chimeras = chimeras_removed_reads,
     Canine_ID      = Dog_ID,
     Sample_Site    = Sample_Site,
     Category       = Collection_Cat,
     Surgery        = Surgery_Type
   ) 
+
+dog_totals <- all_data %>%
+  group_by(Individual) %>%
+  summarise(
+    Total_Reads_Dog = sum(Total_Reads, na.rm = TRUE),
+    Removed_Ns_Dog = sum(No_Ns, na.rm = TRUE),
+    Remove_Primers_Dog = sum(No_Primers, na.rm = TRUE),
+    Filtered_Reads_Dog = sum(Trimmed_Reads, na.rm = TRUE),
+    Final_Reads_Dog = sum(No_Chimeras, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(Total_Reads_Dog)
+
+dog_totals$Individual <- factor(dog_totals$Individual, levels = dog_totals$Individual)
+
+ggplot(dog_totals, aes(x = Individual)) +
+  geom_col(aes(y = Total_Reads_Dog), fill = "#1b9e77", alpha = 0.6) +
+  geom_col(aes(y = Removed_Ns_Dog), fill = "lightblue", alpha = 0.6) +
+  geom_col(aes(y = Remove_Primers_Dog), fill = "yellow", alpha = 0.6) +
+  geom_col(aes(y = Filtered_Reads_Dog), fill = "#FF9900", alpha = 0.6) +
+  geom_col(aes(y = Final_Reads_Dog), fill = "#CC00CC", alpha = 0.6) +
+  theme_classic() +
+  labs(
+    x = "Individual",
+    y = "Reads",
+    title = "Total Reads and Final Reads per Individual",
+    subtitle = "Ordered from lowest to highest total reads"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
 
 all_data <- all_data %>%
   left_join(
@@ -69,38 +98,45 @@ summary_by_run <- all_data %>%
   group_by(Sample_Plate) %>%
   summarise(
     N_Samples = n(),
-    
-    # 1. Calculate the total sums for accurate percentage tracking
     Tot_Raw      = sum(Total_Reads, na.rm = TRUE),
+    Tot_Removed_Ns_Dog = sum(No_Ns, na.rm = TRUE),
+    Tot_Remove_Primers_Dog = sum(No_Primers, na.rm = TRUE),
     Tot_Trimmed  = sum(Trimmed_Reads, na.rm = TRUE),
-    Tot_Trunc    = sum(Truncated_Reads, na.rm = TRUE),
     Tot_F_Denois = sum(denoised_forward, na.rm = TRUE),
-    Tot_R_Denois = sum(denoised_reverse, na.rm = TRUE),
-    Tot_Merged   = sum(Merged_Pairs, na.rm = TRUE),
     Tot_NoChim   = sum(No_Chimeras, na.rm = TRUE),
     
-    # 2. Calculate the true means (Divided by 1000 for Thousands / 'k')
-    Raw_Mean_k              = round((Tot_Raw / 1000)),
-    Trimmed_Mean_k          = round((Tot_Trimmed / 1000)),
-    Trunc_mean_k            = round((Tot_Trunc / 1000)),
-    Denoised_Forward_Mean_k = round((Tot_F_Denois / 1000)),
-    Denoised_Reverse_Mean_k = round((Tot_R_Denois / 1000)),
-    Merged_Mean_k           = round((Tot_Merged / 1000)),
-    No_Chimeras_Mean_k      = round((Tot_NoChim / 1000)),
     
-    # 3. Calculate true run-level percentage losses from the sums
-    Trimmed_Read_Loss_Pct          = round((Tot_Raw - Tot_Trimmed) / Tot_Raw * 100, 1),
-    Trunc_Read_Loss_Pct            = round((Tot_Trimmed - Tot_Trunc) / Tot_Trimmed * 100, 1),
-    Forward_Denoised_Read_Loss_Pct = round((Tot_Trunc - Tot_F_Denois) / Tot_Trunc * 100, 1),
-    Reverse_Denoised_Read_Loss_Pct = round((Tot_Trunc - Tot_R_Denois) / Tot_Trunc * 100, 1),
-    Forward_Merged_Read_Loss_Pct   = round((Tot_F_Denois - Tot_Merged) / Tot_F_Denois * 100, 1),
-    Reverse_Merged_Read_Loss_Pct   = round((Tot_R_Denois - Tot_Merged) / Tot_R_Denois * 100, 1),
-    Chimeras_Read_Loss_Pct         = round((Tot_Merged - Tot_NoChim) / Tot_Merged * 100, 1),
+    mean_Raw      = mean(Total_Reads, na.rm = TRUE)/1000,
+    mean_Removed_Ns_Dog = mean(No_Ns, na.rm = TRUE)/1000,
+    mean_Remove_Primers_Dog = mean(No_Primers, na.rm = TRUE)/1000,
+    mean_Trimmed  = mean(Trimmed_Reads, na.rm = TRUE)/1000,
+    mean_F_Denois = mean(denoised_forward, na.rm = TRUE)/1000,
+    mean_NoChim   = mean(No_Chimeras, na.rm = TRUE)/1000,
+    
+    
+    Ns_Read_Loss_Pct          = round((Tot_Raw - Tot_Removed_Ns_Dog) / Tot_Raw * 100, 1),
+    Primers_Read_Loss_Pct          = round((Tot_Removed_Ns_Dog - Tot_Remove_Primers_Dog) / Tot_Removed_Ns_Dog * 100, 1),
+    Trimmed_Read_Loss_Pct          = round((Tot_Remove_Primers_Dog - Tot_Trimmed) / Tot_Remove_Primers_Dog * 100, 1),
+    Forward_Denoised_Read_Loss_Pct = round((Tot_Trimmed - Tot_F_Denois) / Tot_Trimmed * 100, 1),
+    Chimeras_Read_Loss_Pct         = round((Tot_F_Denois - Tot_NoChim) / Tot_F_Denois * 100, 1),
     
     .groups = "drop"
   ) %>%
-  # 4. Remove the temporary total columns used for calculations
-  dplyr::select(-starts_with("Tot_")) %>% 
+  dplyr::select(
+    Sample_Plate,
+    N_Samples,
+    mean_Raw,
+    mean_Removed_Ns_Dog,
+    mean_Remove_Primers_Dog,
+    mean_Trimmed,
+    mean_F_Denois,
+    mean_NoChim,
+    Ns_Read_Loss_Pct,
+    Primers_Read_Loss_Pct,
+    Trimmed_Read_Loss_Pct,
+    Forward_Denoised_Read_Loss_Pct,
+    Chimeras_Read_Loss_Pct
+  ) %>%
   arrange(Sample_Plate)
 
  
@@ -110,60 +146,43 @@ kable(
   caption = "Summary Statistics by Seq Run",
   digits = 2,
   col.names = c(
-    "Seq. Run",
-    "N Samples",
-    "Raw",
-    "Trimmed",
-    "Truncated",
-    "Denoised Fwd",
-    "Denoised Rev",
-    "Merged Pairs",
-    "Chimeras-removed",
-    "Trimmed",
-    "Truncated",
-    "Denoised Fwd",
-    "Denoised Rev",
-    "Fwd Reads Post-Merging",
-    "Rev Reads Post-Merging",
-    "Chimera Removal"
-  )
+  "Seq. Run",
+  "N Samples",
+  "Raw",
+  "Removed Ns",
+  "Removed primers",
+  "Filtered",
+  "Denoised Fwd Average",
+  "Chimeras-removed Average",
+  "Ns removed Read Loss (%)",
+  "Primers removed Read Loss (%)",
+  "Trimmed Read Loss (%)",
+  "Denoised Fwd Read Loss (%)",
+  "Chimera Removal Read Loss (%)"
+)
 ) %>%
   add_header_above(c(
     " " = 2,
-    "Read Counts (in thousands)" = 7,
-    "Read Loss at Each Processing Step (%)" = 7
+    "Read Average (k)" = 6,
+    "Read % Loss at Each Processing Step" = 3
   )) %>%
   kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
-  column_spec(1, bold = TRUE, background = "lightgray")%>%
-  column_spec(2, border_right = TRUE)%>%
-  column_spec(9, border_right = TRUE)
+  column_spec(1, bold = TRUE, background = "lightgray") %>%
+  column_spec(2, border_right = TRUE) %>%
+  column_spec(6, border_right = TRUE)
 ```
 
-## % Read Loss Across Timepoints per Dog 
+## % Read Loss Across Timepoints  
 ```{r individual-plots-read-loss, fig.height=15, fig.width=12, echo=FALSE}
-library(dplyr)
-library(tidyr)
-library(ggplot2)
-library(purrr)
-library(patchwork)
-
 cat_order <- c(
- # "Trimmed_Read_Loss_Pct",
-  "Trunc_Read_Loss_Pct",
+ "Trimmed_Read_Loss_Pct",
   "Forward_Denoised_Read_Loss_Pct",
-  "Reverse_Denoised_Read_Loss_Pct",
-  "Forward_Merged_Read_Loss_Pct",
-  "Reverse_Merged_Read_Loss_Pct",
   "Chimeras_Read_Loss_Pct"
 )
 
 label_map <- c(
-  #"Trimmed_Read_Loss_Pct" = "Trimmed % Loss",
-  "Trunc_Read_Loss_Pct" = "Truncated % Loss",
+  "Trimmed_Read_Loss_Pct" = "Trimmed % Loss",
   "Forward_Denoised_Read_Loss_Pct" = "Fwd Denoised % Lost",
-  "Reverse_Denoised_Read_Loss_Pct" = "Rev Denoised % Lost",
-  "Forward_Merged_Read_Loss_Pct" = "Fwd Merged % Lost",
-  "Reverse_Merged_Read_Loss_Pct" = "Rev Merged % Lost",
   "Chimeras_Read_Loss_Pct" = "Chimeras % Lost"
 )
 
@@ -175,29 +194,19 @@ summary_by_sample <- all_data %>%
     # 1. Calculate the total sums for accurate percentage tracking
     Tot_Raw      = sum(Total_Reads, na.rm = TRUE),
     Tot_Trimmed  = sum(Trimmed_Reads, na.rm = TRUE),
-    Tot_Trunc    = sum(Truncated_Reads, na.rm = TRUE),
     Tot_F_Denois = sum(denoised_forward, na.rm = TRUE),
-    Tot_R_Denois = sum(denoised_reverse, na.rm = TRUE),
-    Tot_Merged   = sum(Merged_Pairs, na.rm = TRUE),
     Tot_NoChim   = sum(No_Chimeras, na.rm = TRUE),
     
     # 2. Calculate the true means (Divided by 1000 for Thousands / 'k')
     Raw_Mean_k              = round((Tot_Raw / 1000)),
     Trimmed_Mean_k          = round((Tot_Trimmed / 1000)),
-    Trunc_mean_k            = round((Tot_Trunc / 1000)),
     Denoised_Forward_Mean_k = round((Tot_F_Denois / 1000)),
-    Denoised_Reverse_Mean_k = round((Tot_R_Denois / 1000)),
-    Merged_Mean_k           = round((Tot_Merged / 1000)),
     No_Chimeras_Mean_k      = round((Tot_NoChim / 1000)),
     
     # 3. Calculate true run-level percentage losses from the sums
     Trimmed_Read_Loss_Pct          = round((Tot_Raw - Tot_Trimmed) / Tot_Raw * 100, 1),
-    Trunc_Read_Loss_Pct            = round((Tot_Trimmed - Tot_Trunc) / Tot_Trimmed * 100, 1),
-    Forward_Denoised_Read_Loss_Pct = round((Tot_Trunc - Tot_F_Denois) / Tot_Trunc * 100, 1),
-    Reverse_Denoised_Read_Loss_Pct = round((Tot_Trunc - Tot_R_Denois) / Tot_Trunc * 100, 1),
-    Forward_Merged_Read_Loss_Pct   = round((Tot_F_Denois - Tot_Merged) / Tot_F_Denois * 100, 1),
-    Reverse_Merged_Read_Loss_Pct   = round((Tot_R_Denois - Tot_Merged) / Tot_R_Denois * 100, 1),
-    Chimeras_Read_Loss_Pct         = round((Tot_Merged - Tot_NoChim) / Tot_Merged * 100, 1),
+     Forward_Denoised_Read_Loss_Pct = round((Tot_Trimmed - Tot_F_Denois) / Tot_Trimmed * 100, 1),
+    Chimeras_Read_Loss_Pct         = round((Tot_F_Denois - Tot_NoChim) / Tot_F_Denois * 100, 1),
     
     .groups = "drop"
   ) %>%
@@ -217,12 +226,8 @@ plot_data <- summary_by_sample %>%
   )
 
 colors <- c(
-  #"Trimmed_Read_Loss_Pct" = "#1b9e77",
-  "Trunc_Read_Loss_Pct" = "#FF3333",
+  "Trimmed_Read_Loss_Pct" = "#1b9e77",
   "Forward_Denoised_Read_Loss_Pct" = "#FF9900",
-  "Reverse_Denoised_Read_Loss_Pct" = "#e6ab02",
-  "Forward_Merged_Read_Loss_Pct" = "#66a61e",
-  "Reverse_Merged_Read_Loss_Pct" = "#3333FF",
   "Chimeras_Read_Loss_Pct" = "#CC00CC"
 )
 
@@ -259,8 +264,8 @@ ggplot(plot_data, aes(x = Category, y = Read_Loss_Pct, fill = Category)) +
   scale_x_discrete(labels = label_map) +
   scale_fill_manual(values = colors, guide = "none") +
   scale_y_continuous(
-    limits = c(0, 40),
-    breaks = seq(0, 40, by = 10),
+    limits = c(0, 100),
+    breaks = seq(0, 100, by = 10),
     expand = expansion(mult = c(0, 0.02))
   ) +
   labs(
@@ -284,26 +289,18 @@ library(purrr)
 library(patchwork)
 
 cat_order <- c(
- # "Trimmed_Read_Loss_Pct",
-  "Trunc_Read_Loss_Pct",
+ "Trimmed_Read_Loss_Pct",
   "Forward_Denoised_Read_Loss_Pct",
-  "Reverse_Denoised_Read_Loss_Pct",
-  "Forward_Merged_Read_Loss_Pct",
-  "Reverse_Merged_Read_Loss_Pct",
   "Chimeras_Read_Loss_Pct"
 )
 
 label_map <- c(
-  #"Trimmed_Read_Loss_Pct" = "Trimmed % Loss",
-  "Trunc_Read_Loss_Pct" = "Truncated % Loss",
+  "Trimmed_Read_Loss_Pct" = "Trimmed % Loss",
   "Forward_Denoised_Read_Loss_Pct" = "Fwd Denoised % Lost",
-  "Reverse_Denoised_Read_Loss_Pct" = "Rev Denoised % Lost",
-  "Forward_Merged_Read_Loss_Pct" = "Fwd Merged % Lost",
-  "Reverse_Merged_Read_Loss_Pct" = "Rev Merged % Lost",
   "Chimeras_Read_Loss_Pct" = "Chimeras % Lost"
 )
 
-plot_data <- summary_by_individual %>%
+plot_data <- all_data %>%
   pivot_longer(
     cols = all_of(cat_order),
     names_to = "Category",
@@ -315,12 +312,8 @@ plot_data <- summary_by_individual %>%
   )
 
 colors <- c(
-  #"Trimmed_Read_Loss_Pct" = "#1b9e77",
-  "Trunc_Read_Loss_Pct" = "#FF3333",
+  "Trimmed_Read_Loss_Pct" = "#1b9e77",
   "Forward_Denoised_Read_Loss_Pct" = "#FF9900",
-  "Reverse_Denoised_Read_Loss_Pct" = "#e6ab02",
-  "Forward_Merged_Read_Loss_Pct" = "#66a61e",
-  "Reverse_Merged_Read_Loss_Pct" = "#3333FF",
   "Chimeras_Read_Loss_Pct" = "#CC00CC"
 )
 

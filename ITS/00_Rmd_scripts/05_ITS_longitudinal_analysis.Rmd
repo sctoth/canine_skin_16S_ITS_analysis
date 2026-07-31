@@ -1,5 +1,5 @@
 ---
-title: "Canine Skin Microbiome: Microbial Diversity Analysis "
+title: "ITS Canine Skin Microbiome: Microbial Diversity Analysis "
 author: "Spencer Toth"
 date: "`r Sys.Date()`"
 output:
@@ -176,7 +176,7 @@ ggplot(df_long, aes(x = date, y = dog_id, group = dog_id)) +
 
 ### Create phyloseq objects
 ```{r, message=FALSE, warning=FALSE, echo=TRUE}
-load("../02_output_files/01_filtered_ASV_tables/allseqruns_filtered_canine_skin_microbiome.rda")
+load("../02_output_files/01_filtered_ASV_tables/ITS/allseqruns_filtered_canine_skin_microbiome.rda")
 
 ps <- phyloseq(otu_table(ASV_feature_table_decontam, taxa_are_rows=FALSE), 
                sample_data(sample_metadata_decontam), 
@@ -533,6 +533,11 @@ data.frame(
  
 # Subset phyloseq object for downstream analysis
 ps_1 <- subset_taxa(ps, !is.na(Phylum) & !Phylum %in% c("", "uncharacterized"))
+
+
+# remove samples with zero total abundance
+ps_1 <- prune_samples(sample_sums(ps_1) > 0, ps_1)
+
 ```
 
 ### Check: Low-prevalence taxa
@@ -568,7 +573,7 @@ ggplot(prevdf, aes(TotalAbundance, Prevalence / nsamples(ps_1),color=Phylum)) +
 
 ### Total Reads + ASVs per Individual and Sequencing Run
 ```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE}
-out_dir <- "../02_output_files/02_image_files"
+out_dir <- "../02_output_files/02_image_files/ITS"
 
 # Get reads and metadata per sample
 reads_per_sample <- sample_sums(ps_1)
@@ -970,7 +975,7 @@ save_kable(
 
 ### Total Reads + ASVs per Individual 
 ```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE}
-out_dir <- "../02_output_files/02_image_files"
+out_dir <- "../02_output_files/02_image_files/ITS"
 
 # Get reads and metadata per sample
 reads_per_sample <- sample_sums(ps_2)
@@ -1128,7 +1133,6 @@ knitr::kable(top10_asvs, format = "html", border = 1) %>%
   kableExtra::kable_styling(full_width = FALSE)
 ```
 
-
 ### Top 10 Phyla
 ```{r, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
  
@@ -1218,289 +1222,6 @@ cat("Percentage with no species assignment:", round(pct_no_species, 2), "%\n")
  
 ```
 
-### Top 15 Family
-```{r,fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
- 
-# Family-Level
- 
-top10_family <- phy_df_1_positive %>%
-  dplyr::mutate(Family = dplyr::coalesce(Family, "Unknown")) %>%
-  dplyr::group_by(Family) %>%
-  dplyr::summarise(total_abundance = sum(Abundance, na.rm = TRUE), .groups = "drop") %>%
-  dplyr::mutate(relative_abundance = total_abundance / sum(total_abundance, na.rm = TRUE)) %>%
-  dplyr::arrange(dplyr::desc(relative_abundance)) %>%
-  dplyr::slice_head(n = 10) %>%
-  dplyr::pull(Family)
- 
-legend_order <- c(
-  "Staphylococcaceae",
-  "Streptococcaceae",
-  "Neisseriaceae",
-  "Moraxellaceae",
-  "Pasteurellaceae",
-  "Corynebacteriaceae",
-  "Lactobacillaceae",
-  "Porphyromonadaceae",
-  "Micrococcaceae",
-  "Other",
-  "Unknown"
-)
-
-family_colors <- c(
-  "Unknown" = "orange",
-  "Staphylococcaceae" = "#e7298a",
-  "Streptococcaceae" = "#1f78b4",
-  "Neisseriaceae" = "#1b9e77",
-  "Moraxellaceae" = "#a6761d",
-  "Pasteurellaceae" = "red",
-  "Corynebacteriaceae" = "yellow",
-  "Lactobacillaceae" = "#66a61e",
-  "Porphyromonadaceae" = "blue",
-  "Micrococcaceae" = "pink",
-  "Other" = "gray"
-)
-
-phy_df_2 <- phy_df_1_positive %>%
-  dplyr::mutate(Family = dplyr::coalesce(Family, "Unknown")) %>%
-  dplyr::mutate(Family = dplyr::if_else(Family %in% top10_family, Family, "Other")) %>%
-  dplyr::group_by(Sample_Site, Family) %>%
-  dplyr::summarise(total_abundance = sum(Abundance, na.rm = TRUE), .groups = "drop") %>%
-  dplyr::group_by(Sample_Site) %>%
-  dplyr::mutate(relative_abundance = total_abundance / sum(total_abundance, na.rm = TRUE)) %>%
-  dplyr::ungroup()
-
-phy_df_2$Family <- factor(phy_df_2$Family, levels = legend_order)
-
-ggplot(phy_df_2, aes(x = Sample_Site, y = relative_abundance, fill = Family)) +
-  ggtitle("Top 10 Family across Positive Samples") +
-  geom_col(position = "stack") +
-  scale_fill_manual(values = family_colors, breaks = legend_order, drop = FALSE) +
-  labs(x = "Collection Day", y = "Relative abundance", fill = "Family") +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
-
-
-# Family-Level
-tax <- as.data.frame(tax_table(ps_rel_2))
-tax$ASV <- rownames(tax)
-
-no_Family <- is.na(tax$Family) | tax$Family == "" | tax$Family == "NA"
-
-count_no_family <- sum(no_Family)
-total_asvs <- nrow(tax)
-pct_no_genus <- 100 * count_no_family / total_asvs
-
-cat("ASVs with no family assignment:", count_no_family, "\n")
-cat("Percentage with no family assignment:", round(count_no_family, 2), "%\n")
- 
- 
-```
- 
-
-
-### Top 10 ASVs
-```{r,fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
-otu <- as(otu_table(ps_rel_2), "matrix")
-if (!taxa_are_rows(ps_rel_2)) {
-  otu <- t(otu)
-}
-
-asv_mean <- rowMeans(otu, na.rm = TRUE)
-
-Sample_Site <- as.data.frame(sample_data(ps_rel_2))$Sample_Site
-
-asv_in_control <- apply(otu, 1, function(x) sum(x[Sample_Site == "Control"] > 0, na.rm = TRUE))
-asv_in_surgical <- apply(otu, 1, function(x) sum(x[Sample_Site == "Surgical"] > 0, na.rm = TRUE))
-
-asv_order <- names(sort(asv_mean, decreasing = TRUE))
-
-tax <- as.data.frame(tax)
-tax <- tibble::rownames_to_column(tax, "ASV")
-
-asvs_in_skin_samples <- tibble(
-  ASV = asv_order,
-  average_rel_abundance = asv_mean[asv_order],
-  asv_in_control = asv_in_control[asv_order],
-  asv_in_surgical = asv_in_surgical[asv_order]
-) %>%
-  left_join(tax, by = "ASV") %>%
-  dplyr::select(ASV, average_rel_abundance, asv_in_control, asv_in_surgical,
-                Phylum, Family, Order, Genus, Species)
-
-top10_asvs <- asvs_in_skin_samples %>%
-  dplyr::slice_head(n = 10)  
-knitr::kable(top10_asvs, format = "html", border = 1) %>%
-  kableExtra::kable_styling(full_width = FALSE)
-```
-
-### Top 10 Phyla
-```{r,fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
- 
-phy_df_1 <- psmelt(ps_rel_2) 
- 
-top10_phyla <- phy_df_1 %>%
-  dplyr::group_by(Phylum) %>%
-  dplyr::summarise(mean_rel_abundance = mean(Abundance, na.rm = TRUE), .groups = "drop") %>%
-  dplyr::arrange(dplyr::desc(mean_rel_abundance)) %>%
-  dplyr::slice_head(n = 10) %>%
-  dplyr::pull(Phylum)
- 
-
-legend_order <- c(
-  "Cyanobacteriota",
-  "Bacillota",
-  "Fusobacteriota",
-  "Thermodesulfobacteriota",
-  "Campylobacterota",
-  "Pseudomonadota",
-  "Bacteroidota",
-  "Actinomycetota",
-  "Methanobacteriota",
-  "Candidatus Kapabacteria")
-
-
-phylum_colors <- c(
-  "Thermodesulfobacteriota" = "red",
-  "Bacillota"               = "orange",
-  "Methanobacteriota"       = "#7570b3",
-  "Pseudomonadota"          = "#e7298a",
-  "Campylobacterota"        = "#66a61e",
-  "Fusobacteriota"          = "yellow",
-  "Cyanobacteriota"         = "#a6761d",
-  "Bacteroidota"            = "#1b9e77",
-  "Actinomycetota"          = "#1f78b4",
-  "Candidatus Kapabacteria"        = "blue")
-
- 
-phy_df_2 <- phy_df_1 %>%
-  dplyr::group_by(Sample_Site, Phylum) %>%
-  dplyr::summarise(mean_rel_abundance = mean(Abundance, na.rm = TRUE), .groups = "drop") %>%
-  dplyr::arrange(dplyr::desc(mean_rel_abundance)) 
-
-phy_df_2 <- phy_df_2[phy_df_2$Phylum %in% top10_phyla, ]
-
-phy_df_2$Phylum <- factor(phy_df_2$Phylum, levels = legend_order)
-
-ggplot(phy_df_2, aes(x = Sample_Site, y = mean_rel_abundance, fill = Phylum, group = Phylum)) +
-  ggtitle("Top 10 Phyla in Skin Samples") +
-  geom_col(position = "stack") +
-  scale_fill_manual(values = phylum_colors, breaks = legend_order, drop = FALSE) +
-  labs(x = "Collection Day", y = "Average abundance", fill = "Phylum") +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
-
-
-# Genus-Level
-tax <- as.data.frame(tax_table(ps_rel_2))
-tax$ASV <- rownames(tax)
-
-no_Genus <- is.na(tax$Genus) | tax$Genus == "" | tax$Genus == "NA"
-
-count_no_genus <- sum(no_Genus)
-total_asvs <- nrow(tax)
-pct_no_genus <- 100 * count_no_genus / total_asvs
-
-cat("ASVs with no genus assignment:", count_no_genus, "\n")
-cat("Percentage with no genus assignment:", round(pct_no_genus, 2), "%\n")
-
-# Species-Level
-no_species <- is.na(tax$Species) | tax$Species == "" | tax$Species == "NA"
-
-count_no_species <- sum(no_species)
-total_asvs <- nrow(tax)
-pct_no_species <- 100 * count_no_species / total_asvs
-
-cat("ASVs with no species assignment:", count_no_species, "\n")
-cat("Percentage with no species assignment:", round(pct_no_species, 2), "%\n") 
- 
-```
-
-### Top 15 Genus
-```{r,fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
- 
-# Genus-Level
- 
-top10_genus <- phy_df_1_positive %>%
-  dplyr::mutate(Genus = dplyr::coalesce(Genus, "Unknown")) %>%
-  dplyr::group_by(Genus) %>%
-  dplyr::summarise(total_abundance = sum(Abundance, na.rm = TRUE), .groups = "drop") %>%
-  dplyr::mutate(relative_abundance = total_abundance / sum(total_abundance, na.rm = TRUE)) %>%
-  dplyr::arrange(dplyr::desc(relative_abundance)) %>%
-  dplyr::slice_head(n = 10) %>%
-  dplyr::pull(Genus)
- 
-legend_order <- c(
-  "Staphylococcus",
-  "Streptococcus",
-  "Conchiformibius",
-  "Corynebacterium",
-  "Porphyromonas",
-  "Pseudomonas",
-  "Acinetobacter",
-  "Lactococcus",
-  "Moraxella",
-  "Unknown",
-  "Other"
-)
-
-genus_colors <- c(
-  "Unknown" = "orange",
-  "Staphylococcus" = "#e7298a",
-  "Corynebacterium" = "#1f78b4",
-  "Streptococcus" = "#1b9e77",
-  "Lactococcus" = "#a6761d",
-  "Pseudomonas" = "red",
-  "Acinetobacter" = "yellow",
-  "Conchiformibius" = "#66a61e",
-  "Moraxella" = "blue",
-  "Porphyromonas" = "pink",
-  "Other" = "gray"
-)
-
-phy_df_2 <- phy_df_1_positive %>%
-  dplyr::mutate(Genus = dplyr::coalesce(Genus, "Unknown")) %>%
-  dplyr::mutate(Genus = dplyr::if_else(Genus %in% top10_genus, Genus, "Other")) %>%
-  dplyr::group_by(Sample_Site, Genus) %>%
-  dplyr::summarise(total_abundance = sum(Abundance, na.rm = TRUE), .groups = "drop") %>%
-  dplyr::group_by(Sample_Site) %>%
-  dplyr::mutate(relative_abundance = total_abundance / sum(total_abundance, na.rm = TRUE)) %>%
-  dplyr::ungroup()
-
-phy_df_2$Genus <- factor(phy_df_2$Genus, levels = legend_order)
-
-ggplot(phy_df_2, aes(x = Sample_Site, y = relative_abundance, fill = Genus)) +
-  ggtitle("Top 10 Genus across Positive Samples") +
-  geom_col(position = "stack") +
-  scale_fill_manual(values = genus_colors, breaks = legend_order, drop = FALSE) +
-  labs(x = "Collection Day", y = "Relative abundance", fill = "Genus") +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
-
-
-# Genus-Level
-tax <- as.data.frame(tax_table(ps_rel_2))
-tax$ASV <- rownames(tax)
-
-no_Genus <- is.na(tax$Genus) | tax$Genus == "" | tax$Genus == "NA"
-
-count_no_genus <- sum(no_Genus)
-total_asvs <- nrow(tax)
-pct_no_genus <- 100 * count_no_genus / total_asvs
-
-cat("ASVs with no genus assignment:", count_no_genus, "\n")
-cat("Percentage with no genus assignment:", round(pct_no_genus, 2), "%\n")
-
-# Species-Level
-no_species <- is.na(tax$Species) | tax$Species == "" | tax$Species == "NA"
-
-count_no_species <- sum(no_species)
-total_asvs <- nrow(tax)
-pct_no_species <- 100 * count_no_species / total_asvs
-
-cat("ASVs with no species assignment:", count_no_species, "\n")
-cat("Percentage with no species assignment:", round(pct_no_species, 2), "%\n") 
- 
-```
  
  
 
@@ -1639,7 +1360,9 @@ ggplot(alphadiv_plot_control, aes(x = Day_Order, y = Shannon)) +
  
 ### Bray-Curtis (BC) Dissimilarity  
 ```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
+
 # Generate bray-curtis distance matrix using ASV relative abundances
+
 bray_dist <- phyloseq::distance(ps_rel_2, method = "bray")
 bray_matrix <- as.matrix(bray_dist)
 
@@ -1870,117 +1593,7 @@ ctrl_permanova <- adonis2(
 
 print(ctrl_permanova)
 
-
-# Run pairwise - PERMANOVA on control-subset bray curtis matrix 
-set.seed(100)
-pairwise_results_ctrl <- pairwise.adonis2(
-  ctrl_bray_dist_obj ~ Day_Order,
-  strata = "Dog_ID",
-  data = metadata_ctrl,
-  nperm = 999)
-
-p_values <- sapply(names(pairwise_results_ctrl)[-1], function(x) {
-  pairwise_results_ctrl[[x]][["Pr(>F)"]][1]
-})
-
-# Benjamini-Hochberg (BH) adjustment since we are testing multiple comparisons
-p_adjusted <- p.adjust(p_values, method = "BH")
-
-pairwise_df <- data.frame(
-  Comparison = names(p_values),
-  p_value    = p_values,
-  p_adj      = p_adjusted,
-  row.names  = NULL
-)
-
-groups <- str_split_fixed(pairwise_df$Comparison, "_vs_", 2)
-
-pairwise_df$Group1 <- groups[, 1]
-pairwise_df$Group2 <- groups[, 2]
-
-pairwise_df <- pairwise_df[, c("Group1", "Group2", "p_value", "p_adj")]
-
-alpha <- 0.05
-pairwise_tidy_ctrl <- pairwise_df %>%
-  filter(!is.na(p_adj)) %>% 
-  mutate(
-    Significant = ifelse(p_adj <= alpha, "Yes", "No"),
-    Stars = case_when(
-      p_adj <= 0.001 ~ "***",
-      p_adj <= 0.01  ~ "**",
-      p_adj <= 0.05  ~ "*",
-      p_adj <= 0.10 ~ ".",  
-      TRUE ~ ""
-    ),
-    p_adj = round(p_adj, 4) ) %>%
-  arrange(p_adj) 
  
-
-
-# Filter out insignificant pairwise results
-
- sig_df_ctrl <- pairwise_tidy_ctrl %>%
-  filter(Significant == "Yes") %>%
-  mutate(
-    group1 = Group1,
-    group2 = Group2,
-    y.position = NA_real_,    
-    label = Stars
-  )
-x_levels <- levels(factor(metadata_ctrl$Day_Order))
-
-sig_df_ctrl <- sig_df_ctrl %>%
-  mutate(
-    xmin = match(group1, x_levels),
-    xmax = match(group2, x_levels)
-  ) %>%
-  arrange(p_value) %>%
-  mutate(
-    y.position = max(metadata_ctrl$pc1, na.rm = TRUE) +
-      seq(0.05, by = 0.05, length.out = n())
-  )
-print(sig_df_ctrl)
- 
- 
-ggplot(metadata_ctrl, aes(x = Day_Order, y = pc1)) +
-  geom_boxplot(fill = "#CC99FF") +
-  geom_jitter(width = 0.15, alpha = 0.6, color = "black") +
-
-  geom_hline(yintercept = metadata_ctrl_median$median_PCOA[1], linetype = "dashed", color="red") +
-  geom_point(data = metadata_ctrl_median, aes(x = Day_Order, y = median_PCOA),
-             inherit.aes = FALSE, color = "darkblue", size = 3) +
-  geom_line(data = metadata_ctrl_median, aes(x = Day_Order, y = median_PCOA, group = 1),
-            inherit.aes = FALSE, color = "darkblue", linewidth = 1) +
-
-  labs(
-    title = "Control-Site: PCoA Axis 1 Coordinates Across Days",
-    subtitle = "Trend line indicating median PCOA coordinates per timepoint, horizontal red line indicates median_PCOA of Admission",
-    x = "Timepoint",
-    y = "PCoA 1 Coordinates"
-  ) +
-  theme_minimal() +
-  
-  stat_pvalue_manual(
-    sig_df_ctrl,
-    label = "label",
-    xmin = "xmin",
-    xmax = "xmax",
-    y.position = "y.position",
-    tip.length = 0.01,
-    bracket.size = 0.5,
-    size = 5
-  ) +
-  theme(
-    plot.title = element_text(size = 14, face = "bold"),
-    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
-    axis.text.y = element_text(size = 12)
-  ) 
-
- 
- 
- 
- 
-
 # Surgical groups
 set.seed(100)
 
@@ -1996,115 +1609,6 @@ surg_permanova <- adonis2(
 )
 
 print(surg_permanova)
-
-
-
-### Pairwise PERMANOVA  
-set.seed(100)
-pairwise_results_surg <- pairwise.adonis2(
-  surg_bray_dist_obj ~ Day_Order,
-  strata = "Dog_ID",
-  data = metadata_surg,
-  nperm = 999)
-
-p_values <- sapply(names(pairwise_results_surg)[-1], function(x) {
-  pairwise_results_surg[[x]][["Pr(>F)"]][1]
-})
-
-# Benjamini-Hochberg (BH) adjustment since we are testing multiple comparisons
-p_adjusted <- p.adjust(p_values, method = "BH")
-
-pairwise_df <- data.frame(
-  Comparison = names(p_values),
-  p_value    = p_values,
-  p_adj      = p_adjusted,
-  row.names  = NULL
-)
-
-groups <- str_split_fixed(pairwise_df$Comparison, "_vs_", 2)
-
-pairwise_df$Group1 <- groups[, 1]
-pairwise_df$Group2 <- groups[, 2]
-
-pairwise_df <- pairwise_df[, c("Group1", "Group2", "p_value", "p_adj")]
-
-alpha <- 0.05
-pairwise_tidy_surg <- pairwise_df %>%
-  filter(!is.na(p_adj)) %>% 
-  mutate(
-    Significant = ifelse(p_adj <= alpha, "Yes", "No"),
-    Stars = case_when(
-      p_adj <= 0.001 ~ "***",
-      p_adj <= 0.01  ~ "**",
-      p_adj <= 0.05  ~ "*",
-      p_adj <= 0.10 ~ ".",  
-      TRUE ~ ""
-    ),
-    p_adj = round(p_adj, 4) ) %>%
-  arrange(p_adj) 
-
- 
-
-
- 
- sig_df_surg <- pairwise_tidy_surg %>%
-  filter(Significant == "Yes") %>%
-  mutate(
-    group1 = Group1,
-    group2 = Group2,
-    y.position = NA_real_,    
-    label = Stars
-  )
-x_levels <- levels(factor(metadata_surg$Day_Order))
-
-sig_df_surg <- sig_df_surg %>%
-  mutate(
-    xmin = match(group1, x_levels),
-    xmax = match(group2, x_levels)
-  ) %>%
-  arrange(p_value) %>%
-  mutate(
-    y.position = max(metadata_surg$pc1, na.rm = TRUE) +
-      seq(0.05, by = 0.05, length.out = n())
-  )
-print(sig_df_surg)
-
- 
- 
-ggplot(metadata_surg, aes(x = Day_Order, y = pc1)) +
-  geom_boxplot(fill = "#3399FF") +
-  geom_jitter(width = 0.15, alpha = 0.6, color = "black") +
-
-  geom_hline(yintercept = metadata_surg_median$median_PCOA[1], linetype = "dashed", color="red") +
-  geom_point(data = metadata_surg_median, aes(x = Day_Order, y = median_PCOA),
-             inherit.aes = FALSE, color = "darkblue", size = 3) +
-  geom_line(data = metadata_surg_median, aes(x = Day_Order, y = median_PCOA, group = 1),
-            inherit.aes = FALSE, color = "darkblue", linewidth = 1) +
-
-  labs(
-    title = "Surgical-Site: PCoA Axis 1 Coordinates Across Days",
-    subtitle = "Trend line indicating median PCOA coordinates per timepoint, horizontal red line indicates median_PCOA of Admission",
-    x = "Timepoint",
-    y = "PCoA 1 Coordinates"
-  ) +
-  theme_minimal() +
-  
-  stat_pvalue_manual(
-    sig_df_surg,
-    label = "label",
-    xmin = "xmin",
-    xmax = "xmax",
-    y.position = "y.position",
-    tip.length = 0.01,
-    bracket.size = 0.5,
-    size = 5
-  ) +
-  theme(
-    plot.title = element_text(size = 14, face = "bold"),
-    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
-    axis.text.y = element_text(size = 12)
-  )
-  
 
  
 
@@ -2358,17 +1862,7 @@ ggplot(paired_distances, aes(x = Day_Order, y = Bray_Distance)) +
              inherit.aes = FALSE, color = "navyblue", size = 3) +
   geom_line(data = emm_df, aes(x = Day_Order, y = emmean, group = 1),
             inherit.aes = FALSE, color = "navyblue", linewidth = 1) +
-  
-  stat_pvalue_manual(
-    sig_df,
-    label = "label",
-    xmin = "xmin",
-    xmax = "xmax",
-    y.position = "y.position",
-    tip.length = 0.01,
-    bracket.size = 0.5,
-    size = 5
-  ) +
+
   labs(
     title = "Paired Control-vs-Surgical Bray-Curtis Distances Across Timepoints",
     subtitle = "Trend line indicating estimated marginal means per timepoint, horizontal red line indicates emmean of Admission",
@@ -2545,16 +2039,6 @@ ggplot(admission_vs_all_same_site_surg, aes(x = Day_Order, y = Bray_Distance)) +
     y = "Bray-Curtis Dissimilarity to Admission Sample"
   ) +
   theme_minimal() +
-  stat_pvalue_manual(
-    sig_df_surg,
-    label = "label",
-    xmin = "xmin",
-    xmax = "xmax",
-    y.position = "y.position",
-    tip.length = 0.01,
-    bracket.size = 0.5,
-    size = 5
-  ) +
     theme(
     plot.title = element_text(size = 14, face = "bold"),
     axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
@@ -2784,17 +2268,6 @@ ggplot(paired_sample_data_surgical, aes(x = Day_Order, y = pc1)) +
     y = "PCoA 1"
   ) +
   theme_minimal() +
-  
-  stat_pvalue_manual(
-    sig_df_surg,
-    label = "label",
-    xmin = "xmin",
-    xmax = "xmax",
-    y.position = "y.position",
-    tip.length = 0.01,
-    bracket.size = 0.5,
-    size = 5
-  ) +
   theme(
     plot.title = element_text(size = 14, face = "bold"),
     axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
@@ -3298,24 +2771,21 @@ species_subset <- species_df %>%
   
 
 species_colors <- c(
-  "Unknown" = "gray",
+  "Ascochyta sp." = "#e41a1c",
+  "Cladosporium sp." = "#377eb8",
+  "Cladosporium_iridis" = "#4daf4a",
+  "Curvibasidium sp." = "#984ea3",
+  "Debaryomyces sp." = "#ffff33",
+  "Kabatiella_microsticta" = "#a6761d",
+  "Myrothecium sp." = "#a65628",
+  "Neoascochyta sp." = "#66c2a5",
   "Other" = "black",
-  "Staphylococcus sp." = "#e41a1c",
-  "Streptococcus sp." = "#377eb8",
-  "Escherichia-Shigella sp." = "#a6761d",
-  "Corynebacterium sp." = "#4daf4a",
-  "Pseudomonas sp." = "#984ea3",
-  "Lactococcus sp." = "#ffff33",
-  "Acinetobacter sp." = "#a65628",
-  "Bacteroides sp." = "#66c2a5",
-  "Mycoplasmopsis_cynos" = "#b15928",
-  "Enterococcus sp." = "#8da0cb",
-  "Xanthomonas sp." = "#80b1d3",
-  "Conchiformibius sp." = "#ff7f00",
-  "[Ruminococcus] gnavus group sp." = "#fdb462",
-  "Bifidobacterium sp." = "#ffd92f"
+  "Paraphaeosphaeria sp." = "#b15928",
+  "Penicillium sp." = "#8da0cb",
+  "Plectosphaerella sp." = "#80b1d3",
+  "Scleromitrula sp." = "#ff7f00",
+  "Unknown" = "gray"
 )
-
 
 #  Compute ordering of genus_species based on mean abundance in the Before group
 before_order <- species_subset %>%
@@ -3341,7 +2811,7 @@ plot <- species_df_2 %>%
     breaks = seq(0, .65, by = 0.1)
   ) +
   labs(
-    title = "Top Species Across Groups",
+    title = "Top Species Across Surgical Groups",
     x = "Timepoint ",
     y = "Average Relative Abundance",
     fill = "Species"
@@ -4059,8 +3529,8 @@ ps_rel_2_surg <- ps_rel_2 %>%
     Sample_Site == "Surgical")
 original_ASV_count <- ntaxa(ps_rel_2_surg)
 tax_mat <- as(tax_table(ps_rel_2_surg), "matrix")
-genus_species <- paste(tax_mat[, "genus_species"])
-unique_species_count <- length(unique(genus_species))
+Genus <- paste(tax_mat[, "Genus"])
+unique_species_count <- length(unique(Genus))
  
 
 ps_rel_2_surg_filtered <- ps_rel_2_surg %>%
@@ -4069,23 +3539,23 @@ ps_rel_2_surg_filtered <- ps_rel_2_surg %>%
 
 ASV_filtered_count <- ntaxa(ps_rel_2_surg_filtered)
 tax_mat <- as(tax_table(ps_rel_2_surg_filtered), "matrix")
-genus_species <- paste(tax_mat[, "genus_species"])
-filtered_unique_species_count <- length(unique(genus_species))
+Genus <- paste(tax_mat[, "Genus"])
+filtered_unique_species_count <- length(unique(Genus))
  
 # 4. Print the difference
 cat("Original ASV count:", original_ASV_count, "\n")
-cat("Original species count:", unique_species_count, "\n")
+cat("Original genus count:", unique_species_count, "\n")
 cat("Filtered ASV count:", ASV_filtered_count, "\n")
-cat("Filtered species count:", filtered_unique_species_count, "\n")
+cat("Filtered genus count:", filtered_unique_species_count, "\n")
 cat("Lost ASVs:", original_ASV_count - ASV_filtered_count, "\n")
 cat("Lost ASVs (%):", ((original_ASV_count - ASV_filtered_count)/original_ASV_count)*100, "\n")
-cat("Uncharacterized Species:", unique_species_count - filtered_unique_species_count, "\n")
+cat("Uncharacterized Genus:", unique_species_count - filtered_unique_species_count, "\n")
 
 
  
   
 # Only keep species present across all collection days
-ps_rel_2_surg_filtered_2 <- tax_glom(ps_rel_2_surg_filtered, taxrank = "Species")
+ps_rel_2_surg_filtered_2 <- tax_glom(ps_rel_2_surg_filtered, taxrank = "Genus")
 
 day_vec <- as.character(sample_data(ps_rel_2_surg_filtered_2)$Day_Order)
 
@@ -4103,21 +3573,20 @@ filtered_unique_species_count_2 <- ntaxa(ps_rel_2_surg_filtered_2)
  
  
 # 4. Print the difference
-cat("Original species count:", unique_species_count, "\n")
-cat("Filtered species count:", filtered_unique_species_count, "\n")
-cat("Filtered species count 2:", filtered_unique_species_count_2, "\n") 
+cat("Original Genus count:", unique_species_count, "\n")
+cat("Filtered Genus count:", filtered_unique_species_count, "\n")
+cat("Filtered Genus count 2:", filtered_unique_species_count_2, "\n") 
 
 
 species_df <- psmelt(ps_rel_2_surg_filtered_2) %>%
-  mutate(genus_species = paste(Genus, Species, sep = " ")) %>%
-  group_by(Dog_ID, genus_species, Time_Group, Day_Order) %>%
+  group_by(Dog_ID, Genus, Time_Group, Day_Order) %>%
   summarise(
     total_rel_abundance = sum(Abundance, na.rm = TRUE),
     .groups = "drop"
   )
 # Get average species abundance per group by dog
 species_df_time <- species_df %>%
-  group_by(Dog_ID, genus_species, Time_Group) %>%
+  group_by(Dog_ID, Genus, Time_Group) %>%
   summarise(
     mean_rel_abun = mean(total_rel_abundance, na.rm = TRUE),
     .groups = "drop"
@@ -4126,7 +3595,7 @@ species_df_time <- species_df %>%
 # Reformat df so there is a column for each group 
 species_df_formatted <- species_df_time %>%
   pivot_wider(
-    id_cols = c(Dog_ID, genus_species),
+    id_cols = c(Dog_ID, Genus),
     names_from = Time_Group,
     values_from = mean_rel_abun,
     values_fill = 0
@@ -4134,7 +3603,7 @@ species_df_formatted <- species_df_time %>%
    
 # Conduct wilcoxon signed rank test 
 results_species <- species_df_formatted %>%
-  group_by(genus_species) %>%
+  group_by(Genus) %>%
   summarise(
     n_pairs = n(),
     group1_mean = mean(`Before_Surgery`, na.rm = TRUE),
@@ -4160,7 +3629,7 @@ results_species <- species_df_formatted %>%
     .groups = "drop"
   ) %>%
   mutate(p_adj = p.adjust(p, method = "BH")) %>%
-  arrange(p_adj, p, genus_species, direction)
+  arrange(p_adj, p, Genus, direction)
 
 
 results_species_sub_2 <- results_species %>%
@@ -4170,12 +3639,12 @@ kable(results_species_sub_2, format = "html") %>%
   kable_styling(full_width = FALSE, bootstrap_options = "bordered")
 
 top10_species_before_after <- results_species_sub_2 %>%
-  dplyr::pull(genus_species)
+  dplyr::pull(Genus)
  
 # Plot only the top 10 species
 species_df_sub <- species_df_time %>% 
-  dplyr::filter(genus_species %in% top10_species_before_after) %>%
-  group_by(genus_species, Time_Group) %>%
+  dplyr::filter(Genus %in% top10_species_before_after) %>%
+  group_by(Genus, Time_Group) %>%
   summarise(mean_rel_abundance_2 = mean(mean_rel_abun, na.rm = TRUE),
     .groups = "drop"
   )
@@ -4187,15 +3656,15 @@ taxa_cols_vec <- colorRampPalette(base_cols)(n_taxa)
 surgical_taxa_colors <- setNames(taxa_cols_vec, all_species)
 
 plot <- species_df_sub %>% 
-  mutate(genus_species = factor(genus_species, levels = all_species)) %>%
-  ggplot(aes(x = Time_Group, y = mean_rel_abundance_2, fill = genus_species)) +
+  mutate(Genus = factor(Genus, levels = all_species)) %>%
+  ggplot(aes(x = Time_Group, y = mean_rel_abundance_2, fill = Genus)) +
   geom_col(position = "stack") +
   scale_fill_manual(values = surgical_taxa_colors, drop = FALSE) +
   labs(
-    title = paste("Top 10 Species Before (Admission + Pre-Surgery) and Post-Surgery"),
+    title = paste("Top 10 Genus Before (Admission + Pre-Surgery) and Post-Surgery"),
     x = "Timepoint Group)",
     y = "Average Relative Abundance",
-    fill = "Species"
+    fill = "Genus"
   ) +
   theme_classic() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))

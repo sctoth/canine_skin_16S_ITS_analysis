@@ -1,5 +1,5 @@
 ---
-title: "Canine Skin Microbiome: Curate Read and ASV Samples "
+title: "Canine Skin Microbiome: Curate ITS Reads and ASVs "
 author: "Spencer Toth"
 date: "`r Sys.Date()`"
 output:
@@ -10,11 +10,14 @@ output:
 ---
 
 **Purpose:**
-  Analyze read count and ASVs across samples, specifically in comparison to controls (Chlor and Kit) with "zero" microbial signatures. 
+  Run decontam R package to remove flagged contaminants, using "combined" method which incorporates negative controls and initial DNA concentrations. 
   
-**Overview**
- 1. Curation of reads and ASVs https://benjjneb.github.io/FelineBileManuscript/Analyses/FelineBile_Curate.html  2. Perform decontam diagnostics 
-https://benjjneb.github.io/FelineBileManuscript/Analyses/FelineBile_Core.html  
+**Workflow**
+
+  
+**Resources**
+ 1. Curation of reads and ASVs https://benjjneb.github.io/FelineBileManuscript/Analyses/FelineBile_Curate.html  
+ 2. Perform decontam diagnostics  https://benjjneb.github.io/FelineBileManuscript/Analyses/FelineBile_Core.html  
 
 # Load R Packages
 ```{r, message=FALSE, warning=FALSE, echo=TRUE}
@@ -28,101 +31,105 @@ library(dada2)
 library(phyloseq); packageVersion("phyloseq")
 library(knitr)
 library(phangorn)
+library(kableExtra)
+library(gt)
 ```
 # Input files 
 ```{r, message=FALSE, warning=FALSE, echo=TRUE}
 
 # Chimeras removed dada2 ASV feature table 
-ASV_feature_table_og <- readRDS("../01_input_files/dada2_results/canine_skin_microbiome_filtered_nochim_asvs.rds")
-# Remove rows where row names contain "Air"
-ASV_feature_table_og <- ASV_feature_table_og[!grepl("Air", rownames(ASV_feature_table_og)), , drop = FALSE]
+ASV_feature_table_og <- readRDS("../01_input_files/ITS/canine_skin_microbiome_filtered_nochim_asvs.rds")
 
 # Full metadata 
-sample_metadata_og <- read.delim("../01_input_files/metadata/CH-All_Metadata_20220124.tsv", header=TRUE)
+sample_metadata_og <- read.delim("../01_input_files/metadata/CH-All_ITS_Metadata_20220124.tsv", header=TRUE)
+
 # rownames = Samples
 rownames(sample_metadata_og) <- sample_metadata_og$SampleID
+nrow(sample_metadata_og) 
 nrow(sample_metadata_og)
-sample_metadata_og <- sample_metadata_og[!grepl("Air", sample_metadata_og$SampleID), , drop = FALSE]
-nrow(sample_metadata_og)
+
 # ASV sequences annotated 
-taxa_annotations_og <- readRDS("../01_input_files/dada2_results/canine_skin_microbiome_filtered_nochim_asvs_taxa.rds")
-
-# Check to ensure feature table and taxa have identical sequences 
-if(!identical(getSequences(taxa_annotations_og), getSequences(ASV_feature_table_og))) stop("Table mismatch: taxa_annotations, ASV_feature_table")
-
+taxa_annotations_og <- readRDS("../01_input_files/ITS/canine_skin_microbiome_filtered_nochim_asvs_taxa_species.rds")
+ 
 table(sample_metadata_og$Sample_Site, useNA="ifany")
+
+out_dir <- "../02_output_files/02_image_files/ITS"
 ```
 
 ```{r, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
 
 # Input each individual sequencing library DNA concentration for pooling (prior to diluting for sequencing prep)
 
-sample_DNA_library_CH1_clean <- read.csv("../01_input_files/metadata/PoolCalcs_CH1.csv") %>% 
-  filter(!stringr::str_detect(Sample, "Air")) %>%
+sample_DNA_library_CH1_clean <- read.csv("../01_input_files/metadata/PoolCalcs_CH1.csv")  %>%
+  mutate(across(everything(), ~ gsub("16S", "ITS", .))) %>%
+# filter(!stringr::str_detect(Sample, "Air")) %>%
   filter(!is.na(Well) & Well != "") %>% 
-  filter(!is.na(Primer) & Primer == "16S") %>% 
-  select(Sample, Well, nM) %>%
+  filter(!is.na(Primer) & Primer == "ITS") %>% 
+  dplyr::select(Sample, Well, nM) %>%
   mutate(
     Sample = str_replace_all(Sample, "[_\\s]+", "-"),
     raw_DNA_conc = str_replace_all(nM, "nmol/L|nM", ""),
     raw_DNA_conc = as.numeric(str_trim(raw_DNA_conc)),
     pooled_DNA_conc = 200
   ) %>% 
-  select(Sample, raw_DNA_conc, pooled_DNA_conc) %>% 
+  dplyr::select(Sample, raw_DNA_conc, pooled_DNA_conc) %>% 
   distinct(Sample, .keep_all = TRUE)
 
-sample_DNA_library_CH2_clean <- read.csv("../01_input_files/metadata/PoolCalcs_CH2.csv") %>% 
+sample_DNA_library_CH2_clean <- read.csv("../01_input_files/metadata/PoolCalcs_CH2.csv") %>%
+  mutate(across(everything(), ~ gsub("16S", "ITS", .))) %>%
   mutate(Sample = case_match(
     Sample,
-    "Chlor1-16S" ~ "Chlor1b-16S",
-    "Chlor2-16S" ~ "Chlor2b-16S",
-    "Chlor3-16S" ~ "Chlor3b-16S",
+    "Chlor1-ITS" ~ "Chlor1b-ITS",
+    "Chlor2-ITS" ~ "Chlor2b-ITS",
+    "Chlor3-ITS" ~ "Chlor3b-ITS",
     .default = Sample
   )) %>% 
   filter(!is.na(Well) & Well != "") %>% 
-  filter(!is.na(Primer) & Primer == "16S") %>% 
-  filter(!stringr::str_detect(Sample, "Air")) %>%
-  select(Sample, Well, nM) %>%
+  filter(!is.na(Primer) & Primer == "ITS") %>% 
+ #filter(!stringr::str_detect(Sample, "Air")) %>%
+  dplyr::select(Sample, Well, nM) %>%
   mutate(
     Sample = str_replace_all(Sample, "[_\\s]+", "-"),
     raw_DNA_conc = str_replace_all(nM, "nmol/L|nM", ""),
     raw_DNA_conc = as.numeric(str_trim(raw_DNA_conc)),
     pooled_DNA_conc = 100
   ) %>% 
-  select(Sample, raw_DNA_conc, pooled_DNA_conc) %>% 
+  dplyr::select(Sample, raw_DNA_conc, pooled_DNA_conc) %>% 
   distinct(Sample, .keep_all = TRUE)
 
-sample_DNA_library_CH3_clean <- read.csv("../01_input_files/metadata/PoolCalcs_CH3.csv") %>% 
+sample_DNA_library_CH3_clean <- read.csv("../01_input_files/metadata/PoolCalcs_CH3.csv") %>%
+  mutate(across(everything(), ~ gsub("16S", "ITS", .))) %>%
   filter(!is.na(Well) & Well != "") %>% 
-  filter(!is.na(Primer) & Primer == "16S") %>% 
-  filter(!stringr::str_detect(Sample, "Air")) %>%
-  select(Sample, Well, nM) %>%
+  filter(!is.na(Primer) & Primer == "ITS") %>% 
+  #filter(!stringr::str_detect(Sample, "Air")) %>%
+  dplyr::select(Sample, Well, nM) %>%
   mutate(
     Sample = str_replace_all(Sample, "[_\\s]+", "-"),
     raw_DNA_conc = str_replace_all(nM, "nmol/L|nM", ""),
     raw_DNA_conc = as.numeric(str_trim(raw_DNA_conc)),
     pooled_DNA_conc = 10
   ) %>% 
-  select(Sample, raw_DNA_conc, pooled_DNA_conc) %>% 
+  dplyr::select(Sample, raw_DNA_conc, pooled_DNA_conc) %>% 
   distinct(Sample, .keep_all = TRUE)
 
-sample_DNA_library_CH4_clean <- read.csv("../01_input_files/metadata/PoolCalcs_CH4.csv") %>% 
+sample_DNA_library_CH4_clean <- read.csv("../01_input_files/metadata/PoolCalcs_CH4.csv") %>%
+  mutate(across(everything(), ~ gsub("16S", "ITS", .))) %>%
   mutate(Sample = case_match(
     Sample,
-    "CH5 Kit Ctrl 16S" ~ "CH5b-Kit-Ctrl-16S",
+    "CH5 Kit Ctrl ITS" ~ "CH5b-Kit-Ctrl-ITS",
     .default = Sample
   )) %>% 
   filter(!is.na(Well) & Well != "") %>% 
-  filter(!is.na(Primer) & Primer == "16S") %>% 
-  filter(!stringr::str_detect(Sample, "Air")) %>%
-  select(Sample, Well, nM) %>%
+  filter(!is.na(Primer) & Primer == "ITS") %>% 
+#  filter(!stringr::str_detect(Sample, "Air")) %>%
+  dplyr::select(Sample, Well, nM) %>%
   mutate(
     Sample = str_replace_all(Sample, "[_\\s]+", "-"),
     raw_DNA_conc = str_replace_all(nM, "nmol/L| nM", ""),
     raw_DNA_conc = as.numeric(str_trim(raw_DNA_conc)),
     pooled_DNA_conc = 50
   ) %>% 
-  select(Sample, raw_DNA_conc, pooled_DNA_conc) %>% 
+  dplyr::select(Sample, raw_DNA_conc, pooled_DNA_conc) %>% 
   distinct(Sample, .keep_all = TRUE)
 
 # Combine all sequencing runs 
@@ -134,84 +141,205 @@ all_libraries_clean <- bind_rows(
   .id = "run"
 )
 
-
-# Distribution of sample DNA concentrations for each sequencing run 
-ggplot(all_libraries_clean, aes(x = raw_DNA_conc, fill = run)) +
-  ggtitle(paste0("Post-PCR DNA concentrations"))+
-  geom_histogram(bins = 15, color = "black", alpha = 0.7, position = "identity") +
-  labs(x = "DNA concentration (nM)", y = "Count of samples", fill = "Run") +
-  theme_minimal()
-
-# Subset metadata to samples processed within a given sequencing run 
  
  sample_metadata_subset <- sample_metadata_og %>% 
-  select(-any_of("pooled_DNA_conc")) %>% 
+  dplyr::select(-any_of("pooled_DNA_conc")) %>% 
  left_join(get(paste0("all_libraries_clean")), by = c("SampleID" = "Sample")) %>% 
   filter(!is.na(pooled_DNA_conc))
 
 rownames(sample_metadata_subset) <- sample_metadata_subset$SampleID
-
-# Subset ASV feature table to samples processed within a given sequencing run 
-shared_samples <- intersect(rownames(ASV_feature_table_og), sample_metadata_subset$SampleID)
-ASV_table_subset <- ASV_feature_table_og[shared_samples, , drop = FALSE]
-# Remove ASVs with 0 counts across all subsetted samples
-ASV_table_subset <- ASV_table_subset[, colSums(ASV_table_subset) > 0, drop = FALSE]
-
-shared_ASVs <- intersect(colnames(ASV_table_subset), rownames(taxa_annotations_og))
-taxa_annotations_subset <- taxa_annotations_og[shared_ASVs, , drop = FALSE]
-
+ 
 # Number of ASVs per bacterial Phylum
-table(taxa_annotations_subset[,"Phylum"], useNA="ifany")
+table(taxa_annotations_og[,"Phylum"], useNA="ifany")
 
 # Percent of each bacterial Phylum present in ASV feature table 
-tapply(colSums(ASV_table_subset), taxa_annotations_subset[,"Phylum"], sum)/sum(ASV_table_subset)
+tapply(colSums(ASV_feature_table_og), taxa_annotations_og[,"Phylum"], sum)/sum(ASV_feature_table_og)
+
 
 ```
 
 # Curate Data
 Define a generic column with TRUE for all negative controls, and FALSE for real (positive) samples
 ```{r, message=FALSE, warning=FALSE, echo=TRUE}
-sample_metadata_subset$NegativeControl <- grepl("Chlorhex|Kit", sample_metadata_subset$Sample_Site)
+sample_metadata_subset$NegativeControl <- grepl("Chlorhex|Kit|Air", sample_metadata_subset$Sample_Site)
 table(sample_metadata_subset$Sample_Site, sample_metadata_subset$NegativeControl)
 
 class(sample_metadata_subset$raw_DNA_conc)
 summary(sample_metadata_subset$raw_DNA_conc)
+
+
+
+dog_library_samples <- sample_metadata_subset %>%
+  count(Sample_Site, Location_Type, Sample_Plate, name = "n") %>%
+  pivot_wider(names_from = Sample_Plate, values_from = n, values_fill = 0)
+
+totals <- dog_library_samples %>%
+  dplyr::select(-Sample_Site, -Location_Type) %>%
+  dplyr::summarise(dplyr::across(everything(), sum)) %>%
+  dplyr::mutate(Sample_Site = "Total", Location_Type = NA_character_) %>%
+  dplyr::select(Sample_Site, Location_Type, everything())
+
+dog_library_samples <- dplyr::bind_rows(dog_library_samples, totals)
+
+total_columns <- ncol(dog_library_samples)
+sample_plate_index <- which(colnames(dog_library_samples) == "Sample_plate")
+
+align_vector <- rep("|c", total_columns)
+align_vector[total_columns] <- "|c|" # Close the rightmost edge of the table
+align_string <- paste(align_vector, collapse = "")
+
+out_table <- file.path(out_dir, "total_samples_by_type.png")
+
+
+dog_library_samples %>% 
+  kable(caption = "Sample Type Count per Sequencing Run", align = "c") %>% 
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed", "bordered"), 
+    full_width = FALSE
+  ) %>% 
+  column_spec(sample_plate_index, border_right = "3px solid #333333 !important;", color = "black") %>% 
+  column_spec(1:ncol(dog_library_samples), color = "black") %>%
+  row_spec(nrow(dog_library_samples), bold = TRUE, background = "#f2f2f2", color = "black")  
+
+save_kable(
+  dog_library_samples,
+  file = out_table,
+  zoom = 3,
+  vwidth = 600,
+  vheight = 1200
+)
+ 
+ 
+sample_metadata_subset_dogs <- subset(sample_metadata_subset, !grepl("Chlor|Kit", Individual))
+
+dog_library_table <- with(
+  subset(sample_metadata_subset_dogs),
+  table(Individual, Sample_Plate)
+)
+dog_library_table <- rbind(
+  dog_library_table,
+  Total = colSums(dog_library_table)
+)
+ 
+ 
+
+out_table <- file.path(out_dir, "total_samples_by_dog.png")
+ 
+
+dog_library_table_bold <- dog_library_table
+dog_library_table_bold[dog_library_table_bold != 0] <- paste0(
+  "<b>", dog_library_table_bold[dog_library_table_bold != 0], "</b>"
+)
+
+dog_library_table_bold <- kable(
+  dog_library_table_bold,
+  caption = "Dog Sample Count per Sequencing Run",
+  align = "c",
+  escape = FALSE,
+  format = "html"
+) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed", "bordered"),
+    full_width = FALSE
+  ) %>%
+  column_spec(1:5, color = "black") %>%
+  row_spec(
+    nrow(dog_library_table_bold),
+    bold = TRUE,
+    color = "black",
+    background = "#f2f2f2"
+  )
+
+save_kable(
+  dog_library_table_bold,
+  file = out_table,
+  zoom = 3,
+  vwidth = 400,
+  vheight = 1200
+)
+
+dog_library_table_bold
+
 ```
 
 
-```{r, message=FALSE, warning=FALSE, echo=FALSE, results='hide'}
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=FALSE, results='hide'}
 # Distribution of sample DNA concentrations for each sequencing run 
-ggplot(sample_metadata_subset, aes(x = raw_DNA_conc)) +
-  ggtitle(paste0("Post-PCR DNA concentrations")) +
-  geom_histogram(bins = 15, color = "black", alpha = 0.7, position = "identity") +
-  labs(x = "DNA conc (nM)", y = "Count of samples", fill = "Run") +
+ggplot(sample_metadata_subset, aes(x = raw_DNA_conc, fill = Sample_Plate)) + 
+  geom_histogram(bins = 15, alpha = 0.7, position = "identity", color = "black") + 
+  ggtitle("Post-PCR DNA concentrations") + 
+  labs(x = "DNA conc (nM)", y = "Count of samples", fill = "Seq. Run") + 
   theme_minimal()
+
 
 ```
 
 
 ## Inspect library size distribution (read depths) for samples  
-```{r, message=FALSE, warning=FALSE, echo=TRUE}
-# 1. Verify all samples match exactly
-if(!setequal(rownames(sample_metadata_subset), rownames(ASV_table_subset))) {
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE}
+# Verify all samples match exactly
+if(!setequal(rownames(sample_metadata_subset), rownames(ASV_feature_table_og))) {
+  stop("Mismatched samples between metadata and ASV table.")
+}
+
+meta_samples <- rownames(sample_metadata_subset)
+asv_samples  <- rownames(ASV_feature_table_og)
+
+missing_in_meta <- setdiff(asv_samples, meta_samples)
+missing_in_asv  <- setdiff(meta_samples, asv_samples)
+
+shared_samples <- intersect(rownames(sample_metadata_subset), rownames(ASV_feature_table_og))
+
+sample_metadata_subset <- sample_metadata_subset[shared_samples, , drop = FALSE]
+
+if(!setequal(rownames(sample_metadata_subset), rownames(ASV_feature_table_og))) {
   stop("Mismatched samples between metadata and ASV table.")
 }
 
 # 2. Force ASV table rows into the exact same order as metadata
-ASV_table_subset <- ASV_table_subset[rownames(sample_metadata_subset), ]
+ASV_feature_table_og <- ASV_feature_table_og[rownames(sample_metadata_subset), ]
 
 # 3. Calculate LibrarySize safely
-sample_metadata_subset$LibrarySize <- rowSums(ASV_table_subset)
+sample_metadata_subset$LibrarySize <- rowSums(ASV_feature_table_og)
 
-# 4. Plot with correct coloring
-ggplot(data=sample_metadata_subset, aes(x=rank(LibrarySize), y=LibrarySize, color=Sample_Site)) + 
-  geom_point(size = 1.5) + 
+sample_metadata_subset$Sample_Site <- factor(
+  sample_metadata_subset$Sample_Site,
+  levels = c("Control", "Surgical", "Air", "Chlorhex", "Kit")
+)
+
+sample_metadata_subset2 <- sample_metadata_subset |>
+  dplyr::mutate(front = Sample_Site %in% c("Air", "Kit", "Chlorhex")) |>
+  dplyr::arrange(front)
+
+ggplot(sample_metadata_subset2, aes(x = rank(LibrarySize), y = LibrarySize, color = Sample_Site)) + 
+   scale_y_continuous(
+    limits = c(0, 175000),
+    breaks = seq(0, 175000, by = 50000),
+    labels = scales::comma
+  ) +
+  geom_point(size = 2.0) + 
   scale_color_manual(values = c(
     "Chlorhex" = "orange",
     "Kit" = "green",
     "Surgical" = "blue",
-    "Control" = "purple"
-  ))
+    "Control" = "purple",
+    "Air" = "red"
+  ),
+    labels = c(
+      "Chlorhex" = "Chlorhex",
+      "Kit" = "Kit",
+      "Surgical" = "Surgical (Skin)",
+      "Control" = "Control (Skin)",
+      "Air" = "Air"
+    )
+  ) +
+  theme(
+    legend.position = c(0.02, 0.98),
+    legend.justification = c(0, 1),
+    legend.background = element_rect(fill = alpha("white", 0.7), color = NA),
+    legend.key = element_rect(fill = NA, color = NA)
+  ) + guides(color = guide_legend(override.aes = list(size = 3)))
+
 sort(sample_metadata_subset$LibrarySize)[1:30]
 table(sample_metadata_subset$Sample_Site, sample_metadata_subset$NegativeControl)
 
@@ -219,17 +347,17 @@ cat("Print which category (positive = FALSE or negative = TRUE) are the low dept
 table(sample_metadata_subset$Sample_Site[sample_metadata_subset$LibrarySize < 2000], 
       sample_metadata_subset$NegativeControl[sample_metadata_subset$LibrarySize < 2000])
 
-ps <- phyloseq(otu_table(ASV_table_subset, taxa_are_rows=FALSE), 
+ps <- phyloseq(otu_table(ASV_feature_table_og, taxa_are_rows=FALSE), 
                sample_data(sample_metadata_subset), 
-               tax_table(taxa_annotations_subset))
+               tax_table(taxa_annotations_og))
 
 ```
 
 ## Distribution of ASVs 
-```{r, message=FALSE, warning=FALSE, echo=TRUE}
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE}
 # Distribution shows the number of unique ASVs found in a given number of samples 
 
-asv_counts <- colSums(ASV_table_subset > 0)
+asv_counts <- colSums(ASV_feature_table_og > 0)
 plot_data <- as.data.frame(table(asv_counts))
 colnames(plot_data) <- c("Num_Samples", "Num_ASVs")
 plot_data$Num_Samples <- as.numeric(as.character(plot_data$Num_Samples))
@@ -248,12 +376,12 @@ ggplot(plot_data, aes(x = Num_Samples, y = Num_ASVs)) +
 
 
 ## ASV prevalence vs abundance across all samples
-```{r, message=FALSE, warning=FALSE, echo=TRUE}
-df.asv <- data.frame(Sequence=colnames(ASV_table_subset), 
-                     Prevalence=colSums((ASV_table_subset)>0), # number of samples with a given ASV (prevalence)
-                     Prevalence.Pos=colSums(((ASV_table_subset)[!sample_metadata_subset$NegativeControl,]>0)),
-                     Abundance=colSums((ASV_table_subset)), # number of reads from a given ASV (abundance)
-                     Abundance.Pos=colSums(((ASV_table_subset)[!sample_metadata_subset$NegativeControl,])))
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE}
+df.asv <- data.frame(Sequence=colnames(ASV_feature_table_og), 
+                     Prevalence=colSums((ASV_feature_table_og)>0), # number of samples with a given ASV (prevalence)
+                     Prevalence.Pos=colSums(((ASV_feature_table_og)[!sample_metadata_subset$NegativeControl,]>0)),
+                     Abundance=colSums((ASV_feature_table_og)), # number of reads from a given ASV (abundance)
+                     Abundance.Pos=colSums(((ASV_feature_table_og)[!sample_metadata_subset$NegativeControl,])))
 
 ggplot(data=df.asv, aes(x=Prevalence, y=Abundance)) + geom_point(size = 0.5) + scale_y_log10()+ ggtitle("Full Dataset (with negative controls)")
 
@@ -265,52 +393,50 @@ ggplot(data=df.asv, aes(x=Prevalence.Pos, y=Abundance.Pos)) + geom_point(size = 
 
 
 # Initial ASV-filtering   
-ASVs found in >= 5% of positive samples OR 1000 total reads
+ASVs found in >= 10% of positive samples OR >=0.01% of total reads
 ```{r, message=FALSE, warning=FALSE, echo=TRUE}
-postive_samples <- nrow((ASV_table_subset)[!sample_metadata_subset$NegativeControl, ])
+postive_samples <- nrow((ASV_feature_table_og)[!sample_metadata_subset$NegativeControl, ])
 cat(paste0("Number of positive samples: ", postive_samples, "\n"))
-total_reads <- sum(ASV_table_subset)
+total_reads <- sum(ASV_feature_table_og)
 cat(paste0("Total number of reads:", total_reads, "\n"))
 
 # 5% of positive samples
 prevalence_threshold <- round(0.05*postive_samples)
-# If 5% is = 1, make the threshold 2
-if (prevalence_threshold == 1) {
-  prevalence_threshold <- prevalence_threshold + 1
-}
-cat(paste0("5% prevalence threshold: ", prevalence_threshold, "\n"))
+ 
+cat(paste0("10% prevalence threshold: ", prevalence_threshold, "\n"))
 
-abundance_threshold <- 1000
+# 0.01% of total reads threshold
+abundance_threshold <- 0.0001*(total_reads)
  
 true_asv_names <- df.asv$Sequence[df.asv$Prevalence.Pos >= prevalence_threshold | df.asv$Abundance.Pos >= abundance_threshold]
 
 columns_to_keep <- c(true_asv_names)
 
-# Subset ASV feature table to only those with 1000 total reads across samples OR found in at least 5% of positive samples
-ASV_feature_table.filt <- ASV_table_subset[, columns_to_keep]
+# Subset ASV feature table to only those with >=0.01% total reads across samples OR found in at least 5% of positive samples
+ASV_feature_table.filt <- ASV_feature_table_og[, columns_to_keep]
 
  
 total_positive_ASVs <- sum(df.asv$Prevalence.Pos > 1)
 
 print(paste("Number of ASVs found in samples (negative and positive samples)"))
-ncol(ASV_table_subset)
+ncol(ASV_feature_table_og)
 print(paste("Total number of reads found in samples (negative and positive samples)"))
-sum(ASV_table_subset)
+sum(ASV_feature_table_og)
 print(paste("Number of ASVs in positive samples:"))
 print(total_positive_ASVs)
 print(paste("Number of ASVs found in at least", prevalence_threshold, "positive samples or with total abundances >=", abundance_threshold, "reads"))
 ncol(ASV_feature_table.filt)
 print(paste("% of ASVs found in at least", prevalence_threshold, "positive samples or with total abundances >=", abundance_threshold, "reads"))
-(ncol(ASV_feature_table.filt)/ncol(ASV_table_subset))*100
+(ncol(ASV_feature_table.filt)/ncol(ASV_feature_table_og))*100
 print(paste("% of Total Reads from ASVs found in at least", prevalence_threshold, "positive samples or with total abundances >=", abundance_threshold, "reads"))
-(sum(ASV_feature_table.filt)/sum(ASV_table_subset))*100
+(sum(ASV_feature_table.filt)/sum(ASV_feature_table_og))*100
 ```
 
 ## Filter metadata and taxa tables according to new ASV table
 ```{r, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
 # Subset metadata and taxa table 
 sample_metadata.filt <- sample_metadata_subset[match(rownames(ASV_feature_table.filt), rownames(sample_metadata_subset)), ]
-taxa_annotations.filt <- taxa_annotations_subset[match(colnames(ASV_feature_table.filt), rownames(taxa_annotations_subset)), ]
+taxa_annotations.filt <- taxa_annotations_og[match(colnames(ASV_feature_table.filt), rownames(taxa_annotations_og)), ]
  
 if(!identical(rownames(taxa_annotations.filt), getSequences(ASV_feature_table.filt))) {
   stop("Table mismatch: taxa_annotations.filt and ASV_feature_table.filt are not identical.")
@@ -318,39 +444,63 @@ if(!identical(rownames(taxa_annotations.filt), getSequences(ASV_feature_table.fi
 ```
 
 ## Inspect library size distribution (read depths) for samples  
-```{r, message=FALSE, warning=FALSE, echo=TRUE}
-# 1. Verify all samples match exactly
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE}
+# Verify all samples match exactly
 if(!setequal(rownames(sample_metadata.filt), rownames(ASV_feature_table.filt))) {
   stop("Mismatched samples between metadata and ASV table.")
 }
 
-# 2. Force ASV table rows into the exact same order as metadata
+ 
 ASV_feature_table.filt <- ASV_feature_table.filt[rownames(sample_metadata.filt), ]
 
-# 3. Calculate LibrarySize safely
+ 
 sample_metadata.filt$LibrarySize <- rowSums(ASV_feature_table.filt)
 
-# 4. Plot with correct coloring
-ggplot(data=sample_metadata.filt, aes(x=rank(LibrarySize), y=LibrarySize, color=Sample_Site)) + 
-  geom_point(size = 1.0) + 
+sample_metadata.filt2 <- sample_metadata.filt |>
+  dplyr::mutate(front = Sample_Site %in% c("Air", "Kit", "Chlorhex")) |>
+  dplyr::arrange(front)
+
+ggplot(sample_metadata.filt2, aes(x = rank(LibrarySize), y = LibrarySize, color = Sample_Site)) + 
+   scale_y_continuous(
+    limits = c(0, 175000),
+    breaks = seq(0, 175000, by = 50000),
+    labels = scales::comma
+  ) + 
+  geom_point(size = 2.0) + 
   scale_color_manual(values = c(
     "Chlorhex" = "orange",
     "Kit" = "green",
     "Surgical" = "blue",
-    "Control" = "purple"
-  ))
+    "Control" = "purple",
+    "Air" = "red"
+  ),
+    labels = c(
+      "Chlorhex" = "Chlorhex",
+      "Kit" = "Kit",
+      "Surgical" = "Surgical (Skin)",
+      "Control" = "Control (Skin)",
+      "Air" = "Air"
+    )
+  ) +
+  theme(
+    legend.position = c(0.02, 0.98),
+    legend.justification = c(0, 1),
+    legend.background = element_rect(fill = alpha("white", 0.7), color = NA),
+    legend.key = element_rect(fill = NA, color = NA)
+  ) + guides(color = guide_legend(override.aes = list(size = 3)))
+
 sort(sample_metadata.filt$LibrarySize)[1:30]
 table(sample_metadata.filt$Sample_Site, sample_metadata.filt$NegativeControl)
 
 cat("Print which category (positive = FALSE or negative = TRUE) are the low depth samples (<2k reads) from")
-table(sample_metadata.filt$Sample_Site[sample_metadata.filt$LibrarySize < 2000], 
-      sample_metadata.filt$NegativeControl[sample_metadata.filt$LibrarySize < 2000])
+table(sample_metadata.filt$Sample_Site[sample_metadata.filt$LibrarySize < 1000], 
+      sample_metadata.filt$NegativeControl[sample_metadata.filt$LibrarySize < 1000])
 ```
 
-# Run Decontam Diagnostics: Combined Method
+# Run Decontam Diagnostics: Combined method with sequencing run as batches 
 ```{r, message=FALSE, warning=FALSE, echo=TRUE}
 set.seed(100)
-contam <- isContaminant(ASV_feature_table.filt, conc=sample_metadata.filt$raw_DNA_conc, neg=sample_metadata.filt$NegativeControl, method="prevalence", threshold = 0.25)
+contam <- isContaminant(ASV_feature_table.filt, batch = sample_metadata_subset$Sample_Plate, batch.combine = c("minimum"), conc=sample_metadata.filt$raw_DNA_conc, neg=sample_metadata.filt$NegativeControl, method="combined", threshold = 0.1)
 asv_names <- colnames(ASV_feature_table.filt)
 contam$ASV       <- asv_names   
 contam$Phylum <- taxa_annotations.filt[,"Phylum"]
@@ -372,7 +522,7 @@ histo + facet_wrap(~Prevalence)
 i.top10 <- order(contam$p, decreasing=FALSE)[1:10]
 contam[i.top10,]
 
-cat("Number of contaminants (method = prevalence, threshold = 0.25):", sum(contam$contaminant))
+cat("Number of contaminants (method = prevalence, threshold = 0.1):", sum(contam$contaminant))
 
 
 
@@ -381,7 +531,7 @@ cat("Number of contaminants (method = prevalence, threshold = 0.25):", sum(conta
 Remove low-depth samples and then remove contaminant ASVs
 ```{r, message=FALSE, warning=FALSE, echo=TRUE}
 # Filter out samples with <2k reads
-keep_samples <- rownames(sample_metadata.filt)[sample_metadata.filt$LibrarySize >= 2000]
+keep_samples <- rownames(sample_metadata.filt)[sample_metadata.filt$LibrarySize >= 1000]
 final_samples <- intersect(keep_samples, rownames(ASV_feature_table.filt))
 sample_metadata.filt_2 <- sample_metadata.filt[final_samples, , drop = FALSE]
 ASV_feature_table.filt_2 <- ASV_feature_table.filt[final_samples, , drop = FALSE]
@@ -395,9 +545,9 @@ taxa_annotations_decontam <- taxa_annotations.filt[match(colnames(ASV_feature_ta
 
 
 ps_og <- phyloseq(
-  otu_table(as.matrix(ASV_table_subset), taxa_are_rows = FALSE), 
+  otu_table(as.matrix(ASV_feature_table_og), taxa_are_rows = FALSE), 
   sample_data(sample_metadata_subset), 
-  tax_table(as.matrix(taxa_annotations_subset))
+  tax_table(as.matrix(taxa_annotations_og))
 )
 
 ps_og_no_neg <- prune_samples(
@@ -495,16 +645,16 @@ kable(
 
  
 save(ASV_feature_table_decontam, taxa_annotations_decontam, sample_metadata_decontam, 
-     file = paste0("../02_output_files/01_filtered_ASV_tables/allseqruns_filtered_canine_skin_microbiome.rda"))
+     file = paste0("../02_output_files/01_filtered_ASV_tables/ITS/allseqruns_filtered_canine_skin_microbiome.rda"))
 
  
 saveRDS(ps_decontam_no_neg, 
-        file = paste0("../02_output_files/01_filtered_ASV_tables/allseqruns_ASV_feature_table_decontam.rds"))
+        file = paste0("../02_output_files/01_filtered_ASV_tables/ITS/allseqruns_ASV_feature_table_decontam.rds"))
 
 ```
 
 ## Inspect library size distribution (read depths) for samples  
-```{r, message=FALSE, warning=FALSE, echo=TRUE}
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE}
 # 1. Verify all samples match exactly
 if(!setequal(rownames(sample_metadata_decontam), rownames(ASV_feature_table_decontam))) {
   stop("Mismatched samples between metadata and ASV table.")
@@ -513,25 +663,48 @@ if(!setequal(rownames(sample_metadata_decontam), rownames(ASV_feature_table_deco
 # 2. Force ASV table rows into the exact same order as metadata
 ASV_feature_table_decontam <- ASV_feature_table_decontam[rownames(sample_metadata_decontam), ]
 
-# 3. Calculate LibrarySize safely
+# 3. Calculate Library Size safely
 sample_metadata_decontam$LibrarySize <- rowSums(ASV_feature_table_decontam)
 
-# 4. Plot with correct coloring
-ggplot(data=sample_metadata_decontam, aes(x=rank(LibrarySize), y=LibrarySize, color=Sample_Site)) + 
-  geom_point(size = 1.0) + 
+options(scipen = 999)
+ 
+sample_metadata_decontam2 <- sample_metadata_decontam |>
+  dplyr::mutate(front = Sample_Site %in% c("Air", "Kit", "Chlorhex")) |>
+  dplyr::arrange(front)
+
+ggplot(sample_metadata_decontam2, aes(x = rank(LibrarySize), y = LibrarySize, color = Sample_Site)) + 
+   scale_y_continuous(
+    limits = c(0, 175000),
+    breaks = seq(0, 175000, by = 50000),
+    labels = scales::comma
+  ) +
+  geom_point(size = 2.0) + 
   scale_color_manual(values = c(
     "Chlorhex" = "orange",
     "Kit" = "green",
     "Surgical" = "blue",
-    "Control" = "purple"
-  ))
+    "Control" = "purple",
+    "Air" = "red"
+  ),
+    labels = c(
+      "Chlorhex" = "Chlorhex",
+      "Kit" = "Kit",
+      "Surgical" = "Surgical (Skin)",
+      "Control" = "Control (Skin)",
+      "Air" = "Air"
+    ))+
+  theme(
+    legend.position = c(0.02, 0.98),
+    legend.justification = c(0, 1),
+    legend.background = element_rect(fill = alpha("white", 0.7), color = NA),
+    legend.key = element_rect(fill = NA, color = NA)
+  ) + guides(color = guide_legend(override.aes = list(size = 3)))
+
 sort(sample_metadata_decontam$LibrarySize)[1:30]
 table(sample_metadata_decontam$Sample_Site, sample_metadata_decontam$NegativeControl)
 
-cat("Print which category (positive = FALSE or negative = TRUE) are the low depth samples (<2k reads) from")
-table(sample_metadata_decontam$Sample_Site[sample_metadata_decontam$LibrarySize < 2000], 
-      sample_metadata_decontam$NegativeControl[sample_metadata_decontam$LibrarySize < 2000])
 ```
+
 ```{r, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
 sessionInfo()
 ```
