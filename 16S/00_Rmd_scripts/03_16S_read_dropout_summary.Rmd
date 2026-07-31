@@ -1,0 +1,405 @@
+---
+title: "Dog Skin Microbiome: 16S Sequencing QC Report"
+author: "Spencer Toth"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+# Load libraries
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(patchwork)
+library(gridExtra)
+library(knitr)
+library(kableExtra)
+library(RColorBrewer)
+library(scales)
+library(purrr)
+library(cowplot)
+```
+
+# Read-Dropout QC  
+```{r summary-table-individual, echo=TRUE}
+ 
+all_data <- read.csv("../01_input_files/csv_files/seqruns_final_summary_read_counts.csv")
+sample_metadata_og <- read.delim("../../metadata/CH-All_16S_Metadata_20220124.tsv", header=TRUE)
+
+all_data <- all_data %>% 
+  rename(
+    Sample      = sample,
+    Individual = Individual,
+    Total_Reads    = Raw_Sum,
+    Trimmed_Reads  = Trimmed_Sum,
+    Truncated_Reads = Trunc_Sum,
+    denoised_forward = denoised_forward,
+    denoised_reverse = denoised_reverse,
+    Denoised = denoised_total,
+    Merged_Pairs = merged_reads,
+    No_Chimeras = chimeras_removed_reads,
+    Canine_ID      = Dog_ID,
+    Sample_Site    = Sample_Site,
+    Category       = Collection_Cat,
+    Surgery        = Surgery_Type
+  ) 
+
+all_data <- all_data %>%
+  left_join(
+    sample_metadata_og %>% dplyr::select(Sample_Unique, Sample_Plate), 
+    by = c("Sample" = "Sample_Unique")
+  )
+ 
+ 
+
+summary_by_run <- all_data %>%
+  group_by(Sample_Plate) %>%
+  summarise(
+    N_Samples = n(),
+    
+    Tot_Raw      = sum(Total_Reads, na.rm = TRUE),
+    Tot_Trimmed  = sum(Trimmed_Reads, na.rm = TRUE),
+    Tot_Trunc    = sum(Truncated_Reads, na.rm = TRUE),
+    Tot_F_Denois = sum(denoised_forward, na.rm = TRUE),
+    Tot_R_Denois = sum(denoised_reverse, na.rm = TRUE),
+    Tot_Merged   = sum(Merged_Pairs, na.rm = TRUE),
+    Tot_NoChim   = sum(No_Chimeras, na.rm = TRUE),
+
+    Raw_Mean_k              = round(mean((Tot_Raw / 1000))),
+    Trimmed_Mean_k          = round(mean((Tot_Trimmed / 1000))),
+    Trunc_mean_k            = round(mean((Tot_Trunc / 1000))),
+    Denoised_Forward_Mean_k = round(mean((Tot_F_Denois / 1000))),
+    Denoised_Reverse_Mean_k = round(mean((Tot_R_Denois / 1000))),
+    Merged_Mean_k           = round(mean((Tot_Merged / 1000))),
+    No_Chimeras_Mean_k      = round(mean((Tot_NoChim / 1000))),
+    
+    Trimmed_Read_Loss_Pct          = round((Tot_Raw - Tot_Trimmed) / Tot_Raw * 100, 1),
+    Trunc_Read_Loss_Pct            = round((Tot_Trimmed - Tot_Trunc) / Tot_Trimmed * 100, 1),
+    Forward_Denoised_Read_Loss_Pct = round((Tot_Trunc - Tot_F_Denois) / Tot_Trunc * 100, 1),
+    Reverse_Denoised_Read_Loss_Pct = round((Tot_Trunc - Tot_R_Denois) / Tot_Trunc * 100, 1),
+    Forward_Merged_Read_Loss_Pct   = round((Tot_F_Denois - Tot_Merged) / Tot_F_Denois * 100, 1),
+    Reverse_Merged_Read_Loss_Pct   = round((Tot_R_Denois - Tot_Merged) / Tot_R_Denois * 100, 1),
+    Chimeras_Read_Loss_Pct         = round((Tot_Merged - Tot_NoChim) / Tot_Merged * 100, 1),
+    
+    .groups = "drop"
+  ) %>%
+  dplyr::select(-starts_with("Tot_")) %>% 
+  arrange(Sample_Plate)
+
+ 
+ 
+kable(
+  summary_by_run,
+  title = "Summary Statistics by Seq Run",
+  digits = 2,
+  col.names = c(
+    "Seq. Run",
+    "N Samples",
+    "Raw",
+    "Trimmed",
+    "Truncated",
+    "Denoised Fwd",
+    "Denoised Rev",
+    "Merged Pairs",
+    "Chimeras-removed",
+    "Trimmed",
+    "Truncated",
+    "Denoised Fwd",
+    "Denoised Rev",
+    "Post-Merging Fwd",
+    "Post-Merging Rev",
+    "Chimeras-removed"
+  )
+) %>%
+  add_header_above(c(
+    " " = 2,
+    "Average Read Counts (in thousands)" = 7,
+    "Read Loss at Each Processing Step (%)" = 7
+  )) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+  column_spec(1, bold = TRUE, background = "lightgray")%>%
+  column_spec(2, border_right = TRUE)%>%
+  column_spec(9, border_right = TRUE)
+```
+
+# Read Loss (%) per Sample
+```{r sample-read-loss, fig.height=11, fig.width=8, echo=TRUE}
+ cat_order <- c(
+ "Trimmed_Read_Loss_Pct",
+  "Trunc_Read_Loss_Pct",
+  "Forward_Denoised_Read_Loss_Pct",
+  "Reverse_Denoised_Read_Loss_Pct",
+  "Forward_Merged_Read_Loss_Pct",
+  "Reverse_Merged_Read_Loss_Pct",
+  "Chimeras_Read_Loss_Pct"
+)
+
+label_map <- c(
+  "Trimmed_Read_Loss_Pct" = "Trimmed % Loss",
+  "Trunc_Read_Loss_Pct" = "Truncated % Loss",
+  "Forward_Denoised_Read_Loss_Pct" = "Fwd Denoised % Lost",
+  "Reverse_Denoised_Read_Loss_Pct" = "Rev Denoised % Lost",
+  "Forward_Merged_Read_Loss_Pct" = "Fwd Merged % Lost",
+  "Reverse_Merged_Read_Loss_Pct" = "Rev Merged % Lost",
+  "Chimeras_Read_Loss_Pct" = "Chimeras % Lost"
+)
+
+summary_by_sample <- all_data %>%
+  group_by(Sample) %>%
+  summarise(
+    Tot_Raw      = sum(Total_Reads, na.rm = TRUE),
+    Tot_Trimmed  = sum(Trimmed_Reads, na.rm = TRUE),
+    Tot_Trunc    = sum(Truncated_Reads, na.rm = TRUE),
+    Tot_F_Denois = sum(denoised_forward, na.rm = TRUE),
+    Tot_R_Denois = sum(denoised_reverse, na.rm = TRUE),
+    Tot_Merged   = sum(Merged_Pairs, na.rm = TRUE),
+    Tot_NoChim   = sum(No_Chimeras, na.rm = TRUE),
+    
+    Trimmed_Read_Loss_Pct          = round((Tot_Raw - Tot_Trimmed) / Tot_Raw * 100, 1),
+    Trunc_Read_Loss_Pct            = round((Tot_Trimmed - Tot_Trunc) / Tot_Trimmed * 100, 1),
+    Forward_Denoised_Read_Loss_Pct = round((Tot_Trunc - Tot_F_Denois) / Tot_Trunc * 100, 1),
+    Reverse_Denoised_Read_Loss_Pct = round((Tot_Trunc - Tot_R_Denois) / Tot_Trunc * 100, 1),
+    Forward_Merged_Read_Loss_Pct   = round((Tot_F_Denois - Tot_Merged) / Tot_F_Denois * 100, 1),
+    Reverse_Merged_Read_Loss_Pct   = round((Tot_R_Denois - Tot_Merged) / Tot_R_Denois * 100, 1),
+    Chimeras_Read_Loss_Pct         = round((Tot_Merged - Tot_NoChim) / Tot_Merged * 100, 1),
+    
+    .groups = "drop"
+  ) %>%
+  dplyr::select(-starts_with("Tot_")) %>% 
+  arrange(Sample)
+
+
+ 
+
+plot_data <- summary_by_sample %>%
+  pivot_longer(
+    cols = all_of(cat_order),
+    names_to = "Category",
+    values_to = "Read_Loss_Pct"
+  ) %>%
+  mutate(
+    Category = factor(Category, levels = cat_order)
+  )
+
+colors <- c(
+  "Trimmed_Read_Loss_Pct" = "#1b9e77",
+  "Trunc_Read_Loss_Pct" = "#FF3333",
+  "Forward_Denoised_Read_Loss_Pct" = "#FF9900",
+  "Reverse_Denoised_Read_Loss_Pct" = "#e6ab02",
+  "Forward_Merged_Read_Loss_Pct" = "#66a61e",
+  "Reverse_Merged_Read_Loss_Pct" = "#3333FF",
+  "Chimeras_Read_Loss_Pct" = "#CC00CC"
+)
+
+ 
+summary_df <- plot_data %>%
+  group_by(Category) %>%
+  summarise(
+    mean_val = mean(Read_Loss_Pct, na.rm = TRUE),
+    median_val = median(Read_Loss_Pct, na.rm = TRUE),
+    min_val = min(Read_Loss_Pct, na.rm = TRUE),
+    max_val = max(Read_Loss_Pct, na.rm = TRUE),
+    label = paste0(
+    # "n=", n(), "\n",
+      "Mean: ", round(mean_val, 1), "%\n",
+     "Median: ", round(median_val, 1), "%\n",
+      "Min: ", round(min_val, 1), "%\n",
+      "Max: ", round(max_val, 1), "%"
+    ),
+    .groups = "drop"
+  ) %>%
+  mutate(y = 80)
+
+ggplot(plot_data, aes(x = Category, y = Read_Loss_Pct, fill = Category)) +
+  geom_boxplot(alpha = 0.8, width = 0.6) +
+  geom_label(
+    data = summary_df,
+    aes(x = Category, y = y, label = label),
+    inherit.aes = FALSE,
+    size = 3.5,
+    label.size = 0.3,
+    fill = "white",
+    alpha = 0.9
+  ) +
+  scale_x_discrete(labels = label_map) +
+  scale_fill_manual(values = colors, guide = "none") +
+  scale_y_continuous(
+    limits = c(0, 100),
+    breaks = seq(0, 100, by = 10),
+    expand = expansion(mult = c(0, 0.02))
+  ) +
+  labs(
+    x = "Processing Step",
+    y = "Read Loss (%)",
+    title = "Read Loss by Processing Step Across Samples"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 50, hjust = 1, size = 10),
+    axis.text.y = element_text(size = 10),
+    axis.title = element_text(size = 12),
+    plot.title = element_text(size = 13),
+    panel.grid.minor = element_blank()
+  )
+```
+
+# Read Loss (%) per Individual 
+```{r individual-read-loss, fig.height=11, fig.width=8, echo=TRUE}
+
+summary_by_ind <- all_data %>%
+  group_by(Individual) %>%
+  summarise(
+    N_Samples = n(),
+    
+    Tot_Raw      = sum(Total_Reads, na.rm = TRUE),
+    Tot_Trimmed  = sum(Trimmed_Reads, na.rm = TRUE),
+    Tot_Trunc    = sum(Truncated_Reads, na.rm = TRUE),
+    Tot_F_Denois = sum(denoised_forward, na.rm = TRUE),
+    Tot_R_Denois = sum(denoised_reverse, na.rm = TRUE),
+    Tot_Merged   = sum(Merged_Pairs, na.rm = TRUE),
+    Tot_NoChim   = sum(No_Chimeras, na.rm = TRUE),
+
+    Raw_Mean_k              = round(mean((Tot_Raw / 1000))),
+    Trimmed_Mean_k          = round(mean((Tot_Trimmed / 1000))),
+    Trunc_mean_k            = round(mean((Tot_Trunc / 1000))),
+    Denoised_Forward_Mean_k = round(mean((Tot_F_Denois / 1000))),
+    Denoised_Reverse_Mean_k = round(mean((Tot_R_Denois / 1000))),
+    Merged_Mean_k           = round(mean((Tot_Merged / 1000))),
+    No_Chimeras_Mean_k      = round(mean((Tot_NoChim / 1000))),
+    
+    Trimmed_Read_Loss_Pct          = round((Tot_Raw - Tot_Trimmed) / Tot_Raw * 100, 1),
+    Trunc_Read_Loss_Pct            = round((Tot_Trimmed - Tot_Trunc) / Tot_Trimmed * 100, 1),
+    Forward_Denoised_Read_Loss_Pct = round((Tot_Trunc - Tot_F_Denois) / Tot_Trunc * 100, 1),
+    Reverse_Denoised_Read_Loss_Pct = round((Tot_Trunc - Tot_R_Denois) / Tot_Trunc * 100, 1),
+    Forward_Merged_Read_Loss_Pct   = round((Tot_F_Denois - Tot_Merged) / Tot_F_Denois * 100, 1),
+    Reverse_Merged_Read_Loss_Pct   = round((Tot_R_Denois - Tot_Merged) / Tot_R_Denois * 100, 1),
+    Chimeras_Read_Loss_Pct         = round((Tot_Merged - Tot_NoChim) / Tot_Merged * 100, 1),
+    
+    .groups = "drop"
+  ) %>%
+  dplyr::select(-starts_with("Tot_")) %>% 
+  arrange(Individual)
+
+ 
+ 
+kable(
+  summary_by_ind,
+  title = "Summary Statistics per Individual",
+  digits = 2,
+  col.names = c(
+    "Seq. Run",
+    "N Samples",
+    "Raw",
+    "Trimmed",
+    "Truncated",
+    "Denoised Fwd",
+    "Denoised Rev",
+    "Merged Pairs",
+    "Chimeras-removed",
+    "Trimmed",
+    "Truncated",
+    "Denoised Fwd",
+    "Denoised Rev",
+    "Post-Merging Fwd",
+    "Post-Merging Rev",
+    "Chimeras-removed"
+  )
+) %>%
+  add_header_above(c(
+    " " = 2,
+    "Average Read Counts (in thousands)" = 7,
+    "Read Loss at Each Processing Step (%)" = 7
+  )) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+  column_spec(1, bold = TRUE, background = "lightgray")%>%
+  column_spec(2, border_right = TRUE)%>%
+  column_spec(9, border_right = TRUE)
+
+
+ 
+
+plot_data <- summary_by_ind %>%
+  pivot_longer(
+    cols = all_of(cat_order),
+    names_to = "Category",
+    values_to = "Read_Loss_Pct"
+  ) %>%
+  mutate(
+    Category = factor(Category, levels = cat_order)
+  )
+
+colors <- c(
+  "Trimmed_Read_Loss_Pct" = "#1b9e77",
+  "Trunc_Read_Loss_Pct" = "#FF3333",
+  "Forward_Denoised_Read_Loss_Pct" = "#FF9900",
+  "Reverse_Denoised_Read_Loss_Pct" = "#e6ab02",
+  "Forward_Merged_Read_Loss_Pct" = "#66a61e",
+  "Reverse_Merged_Read_Loss_Pct" = "#3333FF",
+  "Chimeras_Read_Loss_Pct" = "#CC00CC"
+)
+
+ 
+summary_df <- plot_data %>%
+  group_by(Category) %>%
+  summarise(
+    mean_val = mean(Read_Loss_Pct, na.rm = TRUE),
+    median_val = median(Read_Loss_Pct, na.rm = TRUE),
+    min_val = min(Read_Loss_Pct, na.rm = TRUE),
+    max_val = max(Read_Loss_Pct, na.rm = TRUE),
+    label = paste0(
+    # "n=", n(), "\n",
+      "Mean: ", round(mean_val, 1), "%\n",
+     "Median: ", round(median_val, 1), "%\n",
+      "Min: ", round(min_val, 1), "%\n",
+      "Max: ", round(max_val, 1), "%"
+    ),
+    .groups = "drop"
+  ) %>%
+  mutate(y = 50)
+
+ggplot(plot_data, aes(x = Category, y = Read_Loss_Pct, fill = Category)) +
+  geom_boxplot(alpha = 0.8, width = 0.6) +
+  geom_label(
+    data = summary_df,
+    aes(x = Category, y = y, label = label),
+    inherit.aes = FALSE,
+    size = 3.5,
+    label.size = 0.3,
+    fill = "white",
+    alpha = 0.9
+  ) +
+  scale_x_discrete(labels = label_map) +
+  scale_fill_manual(values = colors, guide = "none") +
+  scale_y_continuous(
+    limits = c(0, 100),
+    breaks = seq(0, 100, by = 10),
+    expand = expansion(mult = c(0, 0.02))
+  ) +
+  labs(
+    x = "Processing Step",
+    y = "Read Loss (%)",
+    title = "Read Loss by Processing Step Across Individuals"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 50, hjust = 1, size = 10),
+    axis.text.y = element_text(size = 10),
+    axis.title = element_text(size = 12),
+    plot.title = element_text(size = 13),
+    panel.grid.minor = element_blank()
+  )
+```
+ 
+**Session Info:**
+```{r session-info, echo=FALSE}
+sessionInfo()
+```
+
+---
+
