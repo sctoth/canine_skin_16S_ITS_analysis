@@ -1,0 +1,2427 @@
+---
+title: "Canine Skin Microbiome: 16S Differential Abundance Analysis "
+author: "Spencer Toth"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    df_print: paged
+---
+
+**Purpose:**
+Identify specific taxa differences between post-surgery timepoint and other stages in the study. 
+
+# Load files 
+## R packages
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+library(knitr)
+library(FSA)
+library(tidyverse)
+library(vegan)
+library(phyloseq)
+library(ggplot2)
+library(ggtree)
+library(scales)  
+library(RColorBrewer)
+library(segmented)
+library(stringr)
+library(pairwiseAdonis)
+library(ggpubr)
+library(changepoint)
+library(dplyr)
+library(lme4)
+library(emmeans)
+library(nortest)
+library(mcp)
+library(purrr)
+library(kableExtra)
+library(forcats)
+library(microbiome)
+library(lmerTest)       
+library(broom.mixed)
+library(ComplexHeatmap)
+library(circlize)
+```
+ 
+## Import paired-dataset
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+# Paired-only ASV feature table
+ps <- readRDS("../01_input_files/phyloseq/ps_2.rds")
+ 
+sd <- as(sample_data(ps), "data.frame")
+
+# define healing stages
+sd <- sd %>%
+  mutate(
+    Time_Group = case_when(
+      Day_Order %in% c("Admission", "Day 0a - Pre Surgery") ~ "Before_Surgery",
+      Day_Order %in% c("Day 0c - Post Surgery")           ~ "Post_Surgery",
+      Day_Order %in% c("Day 1", "Day 3")                  ~ "Inflammation",
+      Day_Order %in% c("Week 1", "Week 2")                ~ "Proliferation",
+      Day_Order %in% c("Week 3", "Week 4")                ~ "Maturation I",
+      Day_Order %in% c("Week 5", "Week 6")                ~ "Maturation II",
+      TRUE                                                 ~ NA_character_
+    ),
+    Time_Category = case_when(
+      Day_Order %in% c("Admission", "Day 0a - Pre Surgery") ~ "Before",
+      TRUE                                                  ~ "After"
+    )
+  )
+
+
+sd$Time_Group <- factor(sd$Time_Group, levels = c("Before_Surgery", "Post_Surgery", "Inflammation", "Proliferation", "Maturation I", "Maturation II"))
+  
+sample_data(ps) <- sample_data(sd)
+
+range(sample_sums(ps)) 
+```
+
+# Paired Wilcoxen Signed-Rank Test on Surgical Samples  
+ 
+### Relative abundances of ASV + Genus
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+
+# Normalization of ASV counts 
+ps_ASV_rel <- transform_sample_counts(ps, function(x) x / sum(x))
+ 
+# generate df
+ASV_rel_df <- psmelt(ps_ASV_rel) %>%
+arrange(Dog_ID, Genus, Day_Order)
+
+ASV_rel_df_surg <- ASV_rel_df%>%
+   filter(Sample_Site == "Surgical")
+
+# Unique ASVs
+ntaxa(ps)
+tax <- tax_table(ps)
+
+# % ASVs removed due to unknown Genus 
+no_genus <- is.na(tax[, "Genus"]) | tax[, "Genus"] == ""
+n_no_genus <- sum(no_genus, na.rm = TRUE)
+n_total_asv <- ntaxa(ps)
+pct_no_genus <- 100 * n_no_genus / n_total_asv
+
+n_no_genus
+pct_no_genus
+
+cat("Excluded", n_no_genus, "ASVs without genus assignment (", round(pct_no_genus, 1), "% of total ASVs).\n")
+
+
+# Aggregate ASV counts for Genus-Level Analysis + remove ASVs with unknown Genus
+ps_genus <- tax_glom(ps, taxrank = "Genus", NArm = TRUE)
+#Unique genus
+ntaxa(ps_genus)
+
+ps_genus_rel <- transform_sample_counts(ps_genus, function(x) x / sum(x))
+ 
+# ntaxa should be smaller since we aggregated at Genus level 
+ntaxa(ps_genus_rel)
+ 
+
+# turn phyloseq object into a dataframe 
+genus_rel_df <- psmelt(ps_genus_rel) %>%
+arrange(Dog_ID, Genus, Day_Order)
+
+# Check for genus-level (each sample should have one row for each Genus, if multiple appear then it is still at ASV-level)
+check <- genus_rel_df %>%
+  count(Sample, Genus) %>%
+  filter(n > 1)
+ check
+ 
+genus_rel_df_surg <- genus_rel_df%>%
+   filter(Sample_Site == "Surgical")
+```
+
+
+## Genus-level
+  
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE} 
+run_paired_wilcoxon_by_genus <- function(
+    data,
+    time_group_1,
+    time_group_2,
+    exact = TRUE
+) {
+  
+  required_columns <- c("Genus", time_group_1, time_group_2)
+  
+  missing_columns <- setdiff(required_columns, names(data))
+  
+  if (length(missing_columns) > 0) {
+    stop(
+      "The following columns are missing: ",
+      paste(missing_columns, collapse = ", ")
+    )
+  }
+  
+  results <- data %>%
+    group_by(Genus) %>%
+    group_modify(~ {
+      
+      dat <- .x %>%
+        filter(
+          !is.na(.data[[time_group_1]]),
+          !is.na(.data[[time_group_2]])
+        )
+      
+      group_1_values <- dat[[time_group_1]]
+      group_2_values <- dat[[time_group_2]]
+      
+      differences <- group_1_values - group_2_values
+      
+      n_pairs <- length(differences)
+      n_zero_diff <- sum(differences == 0)
+      n_nonzero_diff <- sum(differences != 0)
+      
+      # No signed-rank test can be performed when all differences are zero
+      if (n_nonzero_diff == 0) {
+        return(tibble(
+          n_pairs = n_pairs,
+          n_zero_diff = n_zero_diff,
+          n_nonzero_diff = n_nonzero_diff,
+          stat = NA_real_,
+          p = 1,
+          estimate = 0,
+          conf_low = 0,
+          conf_high = 0
+        ))
+      }
+      
+      test <- wilcox.test(
+        group_1_values,
+        group_2_values,
+        paired = TRUE,
+        exact = exact,
+        conf.int = TRUE
+      )
+      
+      tibble(
+        n_pairs = n_pairs,
+        n_zero_diff = n_zero_diff,
+        n_nonzero_diff = n_nonzero_diff,
+        stat = unname(test$statistic),
+        p = test$p.value,
+        estimate = unname(test$estimate),
+        conf_low = test$conf.int[1],
+        conf_high = test$conf.int[2]
+      )
+    }) %>%
+    ungroup() %>%
+    mutate(
+      p_adj = p.adjust(p, method = "BH")
+    ) %>%
+    arrange(p_adj, p, Genus)
+  
+  return(results)
+}
+
+```
+
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE} 
+run_paired_wilcoxon_by_genus <- function(
+    data,
+    time_group_1,
+    time_group_2,
+    exact = TRUE
+) {
+  
+  required_columns <- c("Genus", time_group_1, time_group_2)
+  
+  missing_columns <- setdiff(required_columns, names(data))
+  
+  if (length(missing_columns) > 0) {
+    stop(
+      "The following columns are missing: ",
+      paste(missing_columns, collapse = ", ")
+    )
+  }
+  
+  results <- data %>%
+    group_by(Genus) %>%
+    group_modify(~ {
+      
+      dat <- .x %>%
+        filter(
+          !is.na(.data[[time_group_1]]),
+          !is.na(.data[[time_group_2]])
+        )
+      
+      group_1_values <- dat[[time_group_1]]
+      group_2_values <- dat[[time_group_2]]
+      
+      differences <- group_1_values - group_2_values
+      
+      n_pairs <- length(differences)
+      n_zero_diff <- sum(differences == 0)
+      n_nonzero_diff <- sum(differences != 0)
+      
+      test <- wilcox.test(
+        group_1_values,
+        group_2_values,
+        paired = TRUE,
+        exact = exact,
+        conf.int = TRUE
+      )
+      
+      tibble(
+        n_pairs = n_pairs,
+        n_zero_diff = n_zero_diff,
+        n_nonzero_diff = n_nonzero_diff,
+        stat = unname(test$statistic),
+        p = test$p.value,
+        estimate = unname(test$estimate),
+        conf_low = test$conf.int[1],
+        conf_high = test$conf.int[2]
+      )
+    }) %>%
+    ungroup() %>%
+    mutate(
+      p_adj = p.adjust(p, method = "BH")
+    ) %>%
+    arrange(p_adj, p, Genus)
+  
+  return(results)
+}
+
+```
+
+### Before_Surgery (Admission + Pre-Surgery) vs Post-Surgery 
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE} 
+# Define the two paired time groups
+Time_Group_1 <- "Before_Surgery"
+Time_Group_2 <- "Post_Surgery"
+
+time_groups <- c(Time_Group_1, Time_Group_2)
+
+# Keep only the two surgery time groups
+genus_rel_df_surg_2 <- genus_rel_df_surg %>%
+  filter(Time_Group %in% time_groups)
+
+# Identify genera present in at least 10% of samples
+taxa_present_10pct <- genus_rel_df_surg_2 %>%
+  group_by(Genus) %>%
+  summarise(
+    prevalence = n_distinct(Sample[Abundance > 0]) /
+                 n_distinct(Sample),
+    .groups = "drop"
+  ) %>%
+  filter(prevalence >= 0.10) %>%
+  dplyr::select(Genus)
+
+# Number of retained genera
+filtered_genus_count <- n_distinct(taxa_present_10pct$Genus)
+
+cat(
+  "Total genera present in at least 10% of samples:",
+  filtered_genus_count,
+  "\n"
+)
+
+# Keep genera satisfying the prevalence criterion
+genus_rel_df_surg_2_filt<- genus_rel_df_surg_2 %>%
+  semi_join(taxa_present_10pct, by = "Genus")
+
+
+# Summarise abundance per dog, genus, and time group
+genus_rel_df_median <- genus_rel_df_surg_2_filt %>%
+  group_by(Dog_ID, Genus, Time_Group) %>%
+  summarise(
+    median_abun = median(Abundance, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Reformat so each time group has its own column
+genus_rel_df_median_formatted <- genus_rel_df_median %>%
+  pivot_wider(
+    id_cols = c(Dog_ID, Genus),
+    names_from = Time_Group,
+    values_from = median_abun,
+    values_fill = 0
+  )
+
+# Conduct paired Wilcoxon signed-rank tests by genus
+results_wt <- run_paired_wilcoxon_by_genus(
+  data = genus_rel_df_median_formatted,
+  time_group_1 = Time_Group_1,
+  time_group_2 = Time_Group_2 
+)
+
+tax_df <- as.data.frame(tax_table(ps_genus))
+ 
+
+results_wt_annotated <- results_wt %>%
+  left_join(tax_df, by = "Genus")
+
+results_wt_annotated_sig <- results_wt_annotated %>%
+  filter(results_wt_annotated$p_adj <= 0.1)
+
+results_wt_annotated_sig
+
+nrow(results_wt_annotated)
+
+significant_genera_1 <- unique(results_wt_annotated_sig$Genus) 
+```
+ 
+### Post-Surgery vs Stage: Inflammation (Days 1 + 3) 
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE} 
+# Define the two paired time groups
+Time_Group_1 <- "Post_Surgery"
+Time_Group_2 <- "Inflammation"
+
+time_groups <- c(Time_Group_1, Time_Group_2)
+
+# Keep only the two surgery time groups
+genus_rel_df_surg_2 <- genus_rel_df_surg %>%
+  filter(Time_Group %in% time_groups)
+
+# Identify genera present in at least 10% of samples
+taxa_present_10pct <- genus_rel_df_surg_2 %>%
+  group_by(Genus) %>%
+  summarise(
+    prevalence = n_distinct(Sample[Abundance > 0]) /
+                 n_distinct(Sample),
+    .groups = "drop"
+  ) %>%
+  filter(prevalence >= 0.10) %>%
+  dplyr::select(Genus)
+
+# Number of retained genera
+filtered_genus_count <- n_distinct(taxa_present_10pct$Genus)
+
+cat(
+  "Total genera present in at least 10% of samples:",
+  filtered_genus_count,
+  "\n"
+)
+
+# Keep genera satisfying the prevalence criterion
+genus_rel_df_surg_2_filt<- genus_rel_df_surg_2 %>%
+  semi_join(taxa_present_10pct, by = "Genus")
+
+
+# Summarise abundance per dog, genus, and time group
+genus_rel_df_median <- genus_rel_df_surg_2_filt %>%
+  group_by(Dog_ID, Genus, Time_Group) %>%
+  summarise(
+    median_abun = median(Abundance, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Reformat so each time group has its own column
+genus_rel_df_median_formatted <- genus_rel_df_median %>%
+  pivot_wider(
+    id_cols = c(Dog_ID, Genus),
+    names_from = Time_Group,
+    values_from = median_abun,
+    values_fill = 0
+  )
+
+# Conduct paired Wilcoxon signed-rank tests by genus
+results_wt <- run_paired_wilcoxon_by_genus(
+  data = genus_rel_df_median_formatted,
+  time_group_1 = Time_Group_1,
+  time_group_2 = Time_Group_2 
+)
+
+tax_df <- as.data.frame(tax_table(ps_genus))
+ 
+
+results_wt_annotated <- results_wt %>%
+  left_join(tax_df, by = "Genus")
+
+results_wt_annotated_sig <- results_wt_annotated %>%
+  filter(results_wt_annotated$p_adj <= 0.1)
+
+results_wt_annotated_sig
+
+nrow(results_wt_annotated)
+
+significant_genera_2 <- unique(results_wt_annotated_sig$Genus) 
+```
+ 
+### Post-Surgery vs Stage: Proliferation (Weeks 1 + 2) 
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE} 
+# Define the two paired time groups
+Time_Group_1 <- "Post_Surgery"
+Time_Group_2 <- "Proliferation"
+
+time_groups <- c(Time_Group_1, Time_Group_2)
+
+# Keep only the two surgery time groups
+genus_rel_df_surg_2 <- genus_rel_df_surg %>%
+  filter(Time_Group %in% time_groups)
+
+# Identify genera present in at least 10% of samples
+taxa_present_10pct <- genus_rel_df_surg_2 %>%
+  group_by(Genus) %>%
+  summarise(
+    prevalence = n_distinct(Sample[Abundance > 0]) /
+                 n_distinct(Sample),
+    .groups = "drop"
+  ) %>%
+  filter(prevalence >= 0.10) %>%
+  dplyr::select(Genus)
+
+# Number of retained genera
+filtered_genus_count <- n_distinct(taxa_present_10pct$Genus)
+
+cat(
+  "Total genera present in at least 10% of samples:",
+  filtered_genus_count,
+  "\n"
+)
+
+# Keep genera satisfying the prevalence criterion
+genus_rel_df_surg_2_filt<- genus_rel_df_surg_2 %>%
+  semi_join(taxa_present_10pct, by = "Genus")
+
+
+# Summarise abundance per dog, genus, and time group
+genus_rel_df_median <- genus_rel_df_surg_2_filt %>%
+  group_by(Dog_ID, Genus, Time_Group) %>%
+  summarise(
+    median_abun = median(Abundance, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Reformat so each time group has its own column
+genus_rel_df_median_formatted <- genus_rel_df_median %>%
+  pivot_wider(
+    id_cols = c(Dog_ID, Genus),
+    names_from = Time_Group,
+    values_from = median_abun,
+    values_fill = 0
+  )
+
+# Conduct paired Wilcoxon signed-rank tests by genus
+results_wt <- run_paired_wilcoxon_by_genus(
+  data = genus_rel_df_median_formatted,
+  time_group_1 = Time_Group_1,
+  time_group_2 = Time_Group_2 
+)
+
+tax_df <- as.data.frame(tax_table(ps_genus))
+ 
+
+results_wt_annotated <- results_wt %>%
+  left_join(tax_df, by = "Genus")
+
+results_wt_annotated_sig <- results_wt_annotated %>%
+  filter(results_wt_annotated$p_adj <= 0.1)
+
+results_wt_annotated_sig
+
+nrow(results_wt_annotated)
+
+significant_genera_3 <- unique(results_wt_annotated_sig$Genus) 
+```
+ 
+### Post-Surgery vs Stage: Maturation I (Weeks 3 + 4) 
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE} 
+# Define the two paired time groups
+Time_Group_1 <- "Post_Surgery"
+Time_Group_2 <- "Maturation I"
+
+time_groups <- c(Time_Group_1, Time_Group_2)
+
+# Keep only the two surgery time groups
+genus_rel_df_surg_2 <- genus_rel_df_surg %>%
+  filter(Time_Group %in% time_groups)
+
+# Identify genera present in at least 10% of samples
+taxa_present_10pct <- genus_rel_df_surg_2 %>%
+  group_by(Genus) %>%
+  summarise(
+    prevalence = n_distinct(Sample[Abundance > 0]) /
+                 n_distinct(Sample),
+    .groups = "drop"
+  ) %>%
+  filter(prevalence >= 0.10) %>%
+  dplyr::select(Genus)
+
+# Number of retained genera
+filtered_genus_count <- n_distinct(taxa_present_10pct$Genus)
+
+cat(
+  "Total genera present in at least 10% of samples:",
+  filtered_genus_count,
+  "\n"
+)
+
+# Keep genera satisfying the prevalence criterion
+genus_rel_df_surg_2_filt<- genus_rel_df_surg_2 %>%
+  semi_join(taxa_present_10pct, by = "Genus")
+
+
+# Summarise abundance per dog, genus, and time group
+genus_rel_df_median <- genus_rel_df_surg_2_filt %>%
+  group_by(Dog_ID, Genus, Time_Group) %>%
+  summarise(
+    median_abun = median(Abundance, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Reformat so each time group has its own column
+genus_rel_df_median_formatted <- genus_rel_df_median %>%
+  pivot_wider(
+    id_cols = c(Dog_ID, Genus),
+    names_from = Time_Group,
+    values_from = median_abun,
+    values_fill = 0
+  )
+
+# Conduct paired Wilcoxon signed-rank tests by genus
+results_wt <- run_paired_wilcoxon_by_genus(
+  data = genus_rel_df_median_formatted,
+  time_group_1 = Time_Group_1,
+  time_group_2 = Time_Group_2 
+)
+
+tax_df <- as.data.frame(tax_table(ps_genus))
+ 
+
+results_wt_annotated <- results_wt %>%
+  left_join(tax_df, by = "Genus")
+
+results_wt_annotated_sig <- results_wt_annotated %>%
+  filter(results_wt_annotated$p_adj <= 0.1)
+
+results_wt_annotated_sig
+
+nrow(results_wt_annotated)
+
+significant_genera_4 <- unique(results_wt_annotated_sig$Genus) 
+```
+ 
+### Post-Surgery vs Stage: Maturation II (Weeks 5 + 6) 
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE} 
+# Define the two paired time groups
+Time_Group_1 <- "Post_Surgery"
+Time_Group_2 <- "Maturation II"
+
+time_groups <- c(Time_Group_1, Time_Group_2)
+
+# Keep only the two surgery time groups
+genus_rel_df_surg_2 <- genus_rel_df_surg %>%
+  filter(Time_Group %in% time_groups)
+
+# Identify genera present in at least 10% of samples
+taxa_present_10pct <- genus_rel_df_surg_2 %>%
+  group_by(Genus) %>%
+  summarise(
+    prevalence = n_distinct(Sample[Abundance > 0]) /
+                 n_distinct(Sample),
+    .groups = "drop"
+  ) %>%
+  filter(prevalence >= 0.10) %>%
+  dplyr::select(Genus)
+
+# Number of retained genera
+filtered_genus_count <- n_distinct(taxa_present_10pct$Genus)
+
+cat(
+  "Total genera present in at least 10% of samples:",
+  filtered_genus_count,
+  "\n"
+)
+
+# Keep genera satisfying the prevalence criterion
+genus_rel_df_surg_2_filt<- genus_rel_df_surg_2 %>%
+  semi_join(taxa_present_10pct, by = "Genus")
+
+
+# Summarise abundance per dog, genus, and time group
+genus_rel_df_median <- genus_rel_df_surg_2_filt %>%
+  group_by(Dog_ID, Genus, Time_Group) %>%
+  summarise(
+    median_abun = median(Abundance, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Reformat so each time group has its own column
+genus_rel_df_median_formatted <- genus_rel_df_median %>%
+  pivot_wider(
+    id_cols = c(Dog_ID, Genus),
+    names_from = Time_Group,
+    values_from = median_abun,
+    values_fill = 0
+  )
+
+# Conduct paired Wilcoxon signed-rank tests by genus
+results_wt <- run_paired_wilcoxon_by_genus(
+  data = genus_rel_df_median_formatted,
+  time_group_1 = Time_Group_1,
+  time_group_2 = Time_Group_2 
+)
+
+tax_df <- as.data.frame(tax_table(ps_genus))
+ 
+
+results_wt_annotated <- results_wt %>%
+  left_join(tax_df, by = "Genus")
+
+results_wt_annotated_sig <- results_wt_annotated %>%
+  filter(results_wt_annotated$p_adj <= 0.1)
+
+results_wt_annotated_sig
+
+nrow(results_wt_annotated)
+
+significant_genera_5 <- unique(results_wt_annotated_sig$Genus) 
+```
+
+Get significant genus list 
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE} 
+ significant_genera_list <- unique(c(significant_genera_1, significant_genera_2, significant_genera_3, significant_genera_4, significant_genera_5))
+ 
+```
+ 
+### Sig. Genus Plot: Surgical vs. Control
+
+Surgical Samples
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE} 
+
+# turn phyloseq object into a dataframe 
+ps_genus_df <- psmelt(ps_genus) %>%
+arrange(Dog_ID, Genus, Day_Order)
+ 
+ps_genus_df_surg <- ps_genus_df %>%
+  filter(Sample_Site == "Surgical")   
+
+
+# Plot only the top genuses
+ps_genus_df_surg_filt <- ps_genus_df_surg %>%
+  group_by(Genus, Day_Order) %>%
+  summarise(
+    total_abundance = sum(Abundance, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(Day_Order) %>%
+  mutate(
+    relative_abundance = total_abundance / sum(total_abundance)
+  ) %>%
+  ungroup()%>%
+  filter(Genus %in% significant_genera_list)  
+
+range(ps_genus_df_surg_filt$relative_abundance)
+ 
+n_taxa <- length(significant_genera_list)
+n_taxa
+base_cols <- brewer.pal(12, "Paired")
+taxa_cols_vec <- colorRampPalette(base_cols)(n_taxa)
+
+idx <- c(rbind(1:ceiling(n_taxa/2), n_taxa:ceiling(n_taxa/2 + 1)))
+idx <- idx[!is.na(idx)]
+
+taxa_cols_vec_reordered <- taxa_cols_vec[idx]
+
+before_order <- ps_genus_df_surg_filt %>%
+  filter(Day_Order == "Admission") %>%
+  group_by(Genus) %>%
+  summarise(mean_before = mean(relative_abundance, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(mean_before)) %>%
+  pull(Genus)
+
+ps_genus_df_surg_filt <- ps_genus_df_surg_filt %>%
+  mutate(Genus = factor(Genus, levels = before_order))
+
+surgical_taxa_colors <- setNames(taxa_cols_vec, before_order)
+ 
+plot <- ps_genus_df_surg_filt %>% 
+  ggplot(aes(x = Day_Order, y = relative_abundance, fill = Genus)) +
+  geom_col(position = "stack") +
+  scale_fill_manual(values = surgical_taxa_colors, drop = FALSE) +
+  scale_y_continuous(
+    limits = c(0, 0.2),
+    breaks = seq(0, 0.2, by = 0.01)
+  ) +
+  labs(
+    title = "Genus Abundance Across Surgical Groups",
+    x = "Collection day",
+    y = "Relative abundance",
+    fill = "Genus"
+  ) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+plot
+```
+ 
+Control Samples
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE} 
+
+# Use counts to calculate per Day relative abundance 
+
+ps_genus_df_ctrl <- ps_genus_df %>%
+  filter(Sample_Site == "Control")   
+
+
+# Plot only the top genuses
+ps_genus_df_ctrl_filt <- ps_genus_df_ctrl %>%
+  group_by(Genus, Day_Order) %>%
+  summarise(
+    total_abundance = sum(Abundance, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(Day_Order) %>%
+  mutate(
+    relative_abundance = total_abundance / sum(total_abundance)
+  ) %>%
+  ungroup()%>%
+  filter(Genus %in% significant_genera_list)  
+
+range(ps_genus_df_ctrl_filt$relative_abundance)
+ 
+n_taxa <- length(significant_genera_list)
+
+base_cols <- brewer.pal(12, "Paired")
+taxa_cols_vec <- colorRampPalette(base_cols)(n_taxa)
+
+idx <- c(rbind(1:ceiling(n_taxa/2), n_taxa:ceiling(n_taxa/2 + 1)))
+idx <- idx[!is.na(idx)]
+
+taxa_cols_vec_reordered <- taxa_cols_vec[idx]
+
+before_order <- ps_genus_df_ctrl_filt %>%
+  filter(Day_Order == "Admission") %>%
+  group_by(Genus) %>%
+  summarise(mean_before = mean(relative_abundance, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(mean_before)) %>%
+  pull(Genus)
+
+ps_genus_df_ctrl_filt <- ps_genus_df_ctrl_filt %>%
+  mutate(Genus = factor(Genus, levels = before_order))
+
+surgical_taxa_colors <- setNames(taxa_cols_vec, before_order)
+ 
+plot <- ps_genus_df_ctrl_filt %>% 
+  ggplot(aes(x = Day_Order, y = relative_abundance, fill = Genus)) +
+  geom_col(position = "stack") +
+  scale_fill_manual(values = surgical_taxa_colors, drop = FALSE) +
+  scale_y_continuous(
+    limits = c(0, 0.2),
+    breaks = seq(0, 0.2, by = 0.01)
+  ) +
+  labs(
+    title = "Genus Abundance Across Control Groups",
+    x = "Collection day",
+    y = "Relative abundance",
+    fill = "Genus"
+  ) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+plot
+```
+ 
+ 
+ 
+## ASV-level
+ 
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE} 
+run_paired_wilcoxon_by_ASV <- function(
+    data,
+    time_group_1,
+    time_group_2,
+    exact = TRUE
+) {
+  
+  required_columns <- c("OTU", time_group_1, time_group_2)
+  
+  missing_columns <- setdiff(required_columns, names(data))
+  
+  if (length(missing_columns) > 0) {
+    stop(
+      "The following columns are missing: ",
+      paste(missing_columns, collapse = ", ")
+    )
+  }
+  
+  results <- data %>%
+    group_by(OTU) %>%
+    group_modify(~ {
+      
+      dat <- .x %>%
+        filter(
+          !is.na(.data[[time_group_1]]),
+          !is.na(.data[[time_group_2]])
+        )
+      
+      group_1_values <- dat[[time_group_1]]
+      group_2_values <- dat[[time_group_2]]
+      
+      differences <- group_1_values - group_2_values
+      
+      n_pairs <- length(differences)
+      n_zero_diff <- sum(differences == 0)
+      n_nonzero_diff <- sum(differences != 0)
+ 
+      
+      test <- wilcox.test(
+        group_1_values,
+        group_2_values,
+        paired = TRUE,
+        exact = exact,
+        conf.int = TRUE
+      )
+      
+      tibble(
+        n_pairs = n_pairs,
+        n_zero_diff = n_zero_diff,
+        n_nonzero_diff = n_nonzero_diff,
+        stat = unname(test$statistic),
+        p = test$p.value,
+        estimate = unname(test$estimate),
+        conf_low = test$conf.int[1],
+        conf_high = test$conf.int[2]
+      )
+    }) %>%
+    ungroup() %>%
+    mutate(
+      p_adj = p.adjust(p, method = "BH")
+    ) %>%
+    arrange(p_adj, p, OTU)
+  
+  return(results)
+}
+
+```
+
+### Before_Surgery (Admission + Pre-Surgery) vs Post-Surgery 
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE} 
+# Define the two paired time groups
+Time_Group_1 <- "Before_Surgery"
+Time_Group_2 <- "Post_Surgery"
+
+time_groups <- c(Time_Group_1, Time_Group_2)
+
+# Keep only the two surgery time groups
+ASV_rel_df_surg_2 <- ASV_rel_df_surg %>%
+  filter(Time_Group %in% time_groups)
+
+# Identify ASVs present in at least 10% of samples
+taxa_present_10pct <- ASV_rel_df_surg_2 %>%
+  group_by(OTU) %>%
+  summarise(
+    prevalence = n_distinct(Sample[Abundance > 0]) /
+                 n_distinct(Sample),
+    .groups = "drop"
+  ) %>%
+  filter(prevalence >= 0.10) %>%
+  dplyr::select(OTU)
+
+# Number of retained genera
+filtered_ASV_count <- n_distinct(taxa_present_10pct$OTU)
+
+cat(
+  "Total ASV present in at least 10% of samples:",
+  filtered_ASV_count,
+  "\n"
+)
+
+# Keep genera satisfying the prevalence criterion
+ASV_rel_df_surg_2_filt <- ASV_rel_df_surg_2 %>%
+  semi_join(taxa_present_10pct, by = "OTU")
+ 
+
+# Summarise abundance per dog, genus, and time group
+ASV_rel_df_median <- ASV_rel_df_surg_2_filt %>%
+  group_by(Dog_ID, OTU, Time_Group) %>%
+  summarise(
+    median_rel_abun = median(Abundance, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Reformat so each time group has its own column
+ASV_rel_df_median_formatted <- ASV_rel_df_median %>%
+  pivot_wider(
+    id_cols = c(Dog_ID, OTU),
+    names_from = Time_Group,
+    values_from = median_rel_abun,
+    values_fill = 0
+  )
+
+# Conduct paired Wilcoxon signed-rank tests by genus
+results_wt <- run_paired_wilcoxon_by_ASV(
+  data = ASV_rel_df_median_formatted,
+  time_group_1 = Time_Group_1,
+  time_group_2 = Time_Group_2 
+)
+ 
+
+tax_df <- tax_table(ps) %>%
+  as("matrix") %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("OTU") %>%
+  tibble::as_tibble()
+
+results_wt_annotated <- results_wt %>%
+  mutate(OTU = as.character(OTU)) %>%
+  left_join(tax_df, by = "OTU")
+
+results_wt_annotated_sig <- results_wt_annotated %>%
+  filter(results_wt_annotated$p_adj <= 0.1)
+
+results_wt_annotated_sig
+
+nrow(results_wt_annotated)
+
+significant_genera_1 <- unique(results_wt_annotated_sig$OTU) 
+```
+ 
+### Post-Surgery vs Stage: Inflammation (Days 1 + 3) 
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE} 
+# Define the two paired time groups
+Time_Group_1 <- "Post_Surgery"
+Time_Group_2 <- "Inflammation"
+
+time_groups <- c(Time_Group_1, Time_Group_2)
+
+# Keep only the two surgery time groups
+ASV_rel_df_surg_2 <- ASV_rel_df_surg %>%
+  filter(Time_Group %in% time_groups)
+
+# Identify ASVs present in at least 10% of samples
+taxa_present_10pct <- ASV_rel_df_surg_2 %>%
+  group_by(OTU) %>%
+  summarise(
+    prevalence = n_distinct(Sample[Abundance > 0]) /
+                 n_distinct(Sample),
+    .groups = "drop"
+  ) %>%
+  filter(prevalence >= 0.10) %>%
+  dplyr::select(OTU)
+
+# Number of retained genera
+filtered_ASV_count <- n_distinct(taxa_present_10pct$OTU)
+
+cat(
+  "Total ASV present in at least 10% of samples:",
+  filtered_ASV_count,
+  "\n"
+)
+
+# Keep genera satisfying the prevalence criterion
+ASV_rel_df_surg_2_filt <- ASV_rel_df_surg_2 %>%
+  semi_join(taxa_present_10pct, by = "OTU")
+ 
+
+# Summarise abundance per dog, genus, and time group
+ASV_rel_df_median <- ASV_rel_df_surg_2_filt %>%
+  group_by(Dog_ID, OTU, Time_Group) %>%
+  summarise(
+    median_rel_abun = median(Abundance, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Reformat so each time group has its own column
+ASV_rel_df_median_formatted <- ASV_rel_df_median %>%
+  pivot_wider(
+    id_cols = c(Dog_ID, OTU),
+    names_from = Time_Group,
+    values_from = median_rel_abun,
+    values_fill = 0
+  )
+
+# Conduct paired Wilcoxon signed-rank tests by genus
+results_wt <- run_paired_wilcoxon_by_ASV(
+  data = ASV_rel_df_median_formatted,
+  time_group_1 = Time_Group_1,
+  time_group_2 = Time_Group_2 
+)
+ 
+
+tax_df <- tax_table(ps) %>%
+  as("matrix") %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("OTU") %>%
+  tibble::as_tibble()
+
+results_wt_annotated <- results_wt %>%
+  mutate(OTU = as.character(OTU)) %>%
+  left_join(tax_df, by = "OTU")
+
+results_wt_annotated_sig <- results_wt_annotated %>%
+  filter(results_wt_annotated$p_adj <= 0.1)
+
+results_wt_annotated_sig
+
+nrow(results_wt_annotated)
+
+significant_genera_2 <- unique(results_wt_annotated_sig$OTU) 
+```
+ 
+### Post-Surgery vs Stage: Proliferation (Weeks 1 + 2) 
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE} 
+# Define the two paired time groups
+Time_Group_1 <- "Post_Surgery"
+Time_Group_2 <- "Proliferation"
+
+time_groups <- c(Time_Group_1, Time_Group_2)
+
+# Keep only the two surgery time groups
+ASV_rel_df_surg_2 <- ASV_rel_df_surg %>%
+  filter(Time_Group %in% time_groups)
+
+# Identify ASVs present in at least 10% of samples
+taxa_present_10pct <- ASV_rel_df_surg_2 %>%
+  group_by(OTU) %>%
+  summarise(
+    prevalence = n_distinct(Sample[Abundance > 0]) /
+                 n_distinct(Sample),
+    .groups = "drop"
+  ) %>%
+  filter(prevalence >= 0.10) %>%
+  dplyr::select(OTU)
+
+# Number of retained genera
+filtered_ASV_count <- n_distinct(taxa_present_10pct$OTU)
+
+cat(
+  "Total ASV present in at least 10% of samples:",
+  filtered_ASV_count,
+  "\n"
+)
+
+# Keep genera satisfying the prevalence criterion
+ASV_rel_df_surg_2_filt <- ASV_rel_df_surg_2 %>%
+  semi_join(taxa_present_10pct, by = "OTU")
+ 
+
+# Summarise abundance per dog, genus, and time group
+ASV_rel_df_median <- ASV_rel_df_surg_2_filt %>%
+  group_by(Dog_ID, OTU, Time_Group) %>%
+  summarise(
+    median_rel_abun = median(Abundance, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Reformat so each time group has its own column
+ASV_rel_df_median_formatted <- ASV_rel_df_median %>%
+  pivot_wider(
+    id_cols = c(Dog_ID, OTU),
+    names_from = Time_Group,
+    values_from = median_rel_abun,
+    values_fill = 0
+  )
+
+# Conduct paired Wilcoxon signed-rank tests by genus
+results_wt <- run_paired_wilcoxon_by_ASV(
+  data = ASV_rel_df_median_formatted,
+  time_group_1 = Time_Group_1,
+  time_group_2 = Time_Group_2 
+)
+ 
+
+tax_df <- tax_table(ps) %>%
+  as("matrix") %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("OTU") %>%
+  tibble::as_tibble()
+
+results_wt_annotated <- results_wt %>%
+  mutate(OTU = as.character(OTU)) %>%
+  left_join(tax_df, by = "OTU")
+
+results_wt_annotated_sig <- results_wt_annotated %>%
+  filter(results_wt_annotated$p_adj <= 0.1)
+
+results_wt_annotated_sig
+
+nrow(results_wt_annotated)
+
+significant_genera_3 <- unique(results_wt_annotated_sig$OTU) 
+```
+ 
+### Post-Surgery vs Stage: Maturation I (Weeks 3 + 4) 
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE} 
+# Define the two paired time groups
+Time_Group_1 <- "Post_Surgery"
+Time_Group_2 <- "Maturation I"
+
+time_groups <- c(Time_Group_1, Time_Group_2)
+
+# Keep only the two surgery time groups
+ASV_rel_df_surg_2 <- ASV_rel_df_surg %>%
+  filter(Time_Group %in% time_groups)
+
+# Identify ASVs present in at least 10% of samples
+taxa_present_10pct <- ASV_rel_df_surg_2 %>%
+  group_by(OTU) %>%
+  summarise(
+    prevalence = n_distinct(Sample[Abundance > 0]) /
+                 n_distinct(Sample),
+    .groups = "drop"
+  ) %>%
+  filter(prevalence >= 0.10) %>%
+  dplyr::select(OTU)
+
+# Number of retained genera
+filtered_ASV_count <- n_distinct(taxa_present_10pct$OTU)
+
+cat(
+  "Total ASV present in at least 10% of samples:",
+  filtered_ASV_count,
+  "\n"
+)
+
+# Keep genera satisfying the prevalence criterion
+ASV_rel_df_surg_2_filt <- ASV_rel_df_surg_2 %>%
+  semi_join(taxa_present_10pct, by = "OTU")
+ 
+
+# Summarise abundance per dog, genus, and time group
+ASV_rel_df_median <- ASV_rel_df_surg_2_filt %>%
+  group_by(Dog_ID, OTU, Time_Group) %>%
+  summarise(
+    median_rel_abun = median(Abundance, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Reformat so each time group has its own column
+ASV_rel_df_median_formatted <- ASV_rel_df_median %>%
+  pivot_wider(
+    id_cols = c(Dog_ID, OTU),
+    names_from = Time_Group,
+    values_from = median_rel_abun,
+    values_fill = 0
+  )
+
+# Conduct paired Wilcoxon signed-rank tests by genus
+results_wt <- run_paired_wilcoxon_by_ASV(
+  data = ASV_rel_df_median_formatted,
+  time_group_1 = Time_Group_1,
+  time_group_2 = Time_Group_2 
+)
+ 
+
+tax_df <- tax_table(ps) %>%
+  as("matrix") %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("OTU") %>%
+  tibble::as_tibble()
+
+results_wt_annotated <- results_wt %>%
+  mutate(OTU = as.character(OTU)) %>%
+  left_join(tax_df, by = "OTU")
+
+results_wt_annotated_sig <- results_wt_annotated %>%
+  filter(results_wt_annotated$p_adj <= 0.1)
+
+results_wt_annotated_sig
+
+nrow(results_wt_annotated)
+
+significant_genera_4 <- unique(results_wt_annotated_sig$OTU) 
+```
+ 
+### Post-Surgery vs Stage: Maturation II (Weeks 5 + 6) 
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE} 
+# Define the two paired time groups
+Time_Group_1 <- "Post_Surgery"
+Time_Group_2 <- "Maturation II"
+
+time_groups <- c(Time_Group_1, Time_Group_2)
+
+# Keep only the two surgery time groups
+ASV_rel_df_surg_2 <- ASV_rel_df_surg %>%
+  filter(Time_Group %in% time_groups)
+
+# Identify ASVs present in at least 10% of samples
+taxa_present_10pct <- ASV_rel_df_surg_2 %>%
+  group_by(OTU) %>%
+  summarise(
+    prevalence = n_distinct(Sample[Abundance > 0]) /
+                 n_distinct(Sample),
+    .groups = "drop"
+  ) %>%
+  filter(prevalence >= 0.10) %>%
+  dplyr::select(OTU)
+
+# Number of retained genera
+filtered_ASV_count <- n_distinct(taxa_present_10pct$OTU)
+
+cat(
+  "Total ASV present in at least 10% of samples:",
+  filtered_ASV_count,
+  "\n"
+)
+
+# Keep genera satisfying the prevalence criterion
+ASV_rel_df_surg_2_filt <- ASV_rel_df_surg_2 %>%
+  semi_join(taxa_present_10pct, by = "OTU")
+ 
+
+# Summarise abundance per dog, genus, and time group
+ASV_rel_df_median <- ASV_rel_df_surg_2_filt %>%
+  group_by(Dog_ID, OTU, Time_Group) %>%
+  summarise(
+    median_rel_abun = median(Abundance, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Reformat so each time group has its own column
+ASV_rel_df_median_formatted <- ASV_rel_df_median %>%
+  pivot_wider(
+    id_cols = c(Dog_ID, OTU),
+    names_from = Time_Group,
+    values_from = median_rel_abun,
+    values_fill = 0
+  )
+
+# Conduct paired Wilcoxon signed-rank tests by genus
+results_wt <- run_paired_wilcoxon_by_ASV(
+  data = ASV_rel_df_median_formatted,
+  time_group_1 = Time_Group_1,
+  time_group_2 = Time_Group_2 
+)
+ 
+
+tax_df <- tax_table(ps) %>%
+  as("matrix") %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("OTU") %>%
+  tibble::as_tibble()
+
+results_wt_annotated <- results_wt %>%
+  mutate(OTU = as.character(OTU)) %>%
+  left_join(tax_df, by = "OTU")
+
+results_wt_annotated_sig <- results_wt_annotated %>%
+  filter(results_wt_annotated$p_adj <= 0.1)
+
+results_wt_annotated_sig
+
+nrow(results_wt_annotated)
+
+significant_genera_5 <- unique(results_wt_annotated_sig$OTU) 
+```
+ 
+ 
+# Linear Mixed Model (Genus)
+
+### CLR transformation of ASV + Genus
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+
+# Aggregate ASV counts for Genus-Level Analysis + remove ASVs with unknown Genus
+ps_genus <- tax_glom(ps, taxrank = "Genus", NArm = TRUE)
+#Unique genus
+ntaxa(ps_genus)
+ps_genus_df <- psmelt(ps_genus) %>%
+arrange(Dog_ID, Genus, Day_Order)
+range(sample_sums(ps_genus)) 
+
+ 
+ps_genus_pseudo <- transform_sample_counts(ps_genus, function(x) x + 1)
+
+# Convert to relative abundances (TSS) then CLR
+ps_genus_clr <- microbiome::transform(ps_genus_pseudo, "clr")
+ 
+ 
+# ntaxa should be smaller since we aggregated at Genus level 
+ntaxa(ps_genus_clr)
+ 
+
+# turn phyloseq object into a dataframe 
+genus_clr_df <- psmelt(ps_genus_clr) %>%
+arrange(Dog_ID, Genus, Day_Order)
+
+# Check for genus-level (each sample should have one row for each Genus, if multiple appear then it is still at ASV-level)
+check <- genus_clr_df %>%
+  count(Sample, Genus) %>%
+  filter(n > 1)
+ check
+ 
+genus_clr_df_surg <- genus_clr_df%>%
+   filter(Sample_Site == "Surgical")
+
+genus_clr_df_ctrl <- genus_clr_df%>%
+   filter(Sample_Site == "Control")
+```
+
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE} 
+ # other method: get genus in at least 10% of all samples 
+taxa_present_10pct <- genus_rel_df_surg %>%
+  group_by(Genus) %>%
+  summarise(
+    prevalence = n_distinct(Sample[Abundance > 0]) /
+                 n_distinct(Sample),
+    .groups = "drop"
+  ) %>%
+  filter(prevalence >= 0.10) %>%
+  pull(Genus)
+```
+
+## Surgical Samples
+```{r, fig.width=8, fig.height=11, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE} 
+ # model the genus identified in Wilcoxen test as significant
+species_df_sub <- genus_clr_df_surg %>%
+  filter(Genus %in% significant_genera_list)
+  
+species_df_sub <- species_df_sub %>%
+  mutate(
+    Time_Group = relevel(Time_Group, ref = "Before_Surgery")   
+  )
+ 
+
+genus_models <- species_df_sub %>%
+  group_by(Genus) %>%
+  group_nest() %>%
+  mutate(
+    model = map(
+      data,
+      ~ lmerTest::lmer(Abundance ~ Time_Group + (1 | Dog_ID), data = .x)
+    ),
+    sum_tbl = map(model, ~ summary(.x))
+  )
+ 
+
+# Extract coefficient tables with p-values AND the fixed effect (Time_Group)
+results <- genus_models %>%
+  mutate(
+    coefs = map(
+      model,
+      ~ as.data.frame(summary(.x)$coefficients) %>%
+        tibble::rownames_to_column("Term")
+    )
+  ) %>%
+  dplyr::select(Genus, coefs) %>%
+  unnest(coefs) %>%
+  filter(grepl("^Time_Group", Term)) %>%
+  mutate(
+    Time_Group = sub("^Time_Group", "", Term)
+  )
+
+# Rename columns if needed (lmerTest gives: Estimate, Std. Error, df, t value, Pr(>|t|))
+results <- results %>%
+  rename(
+    estimate = Estimate,
+    std.error = `Std. Error`,
+    df = df,
+    statistic = `t value`,
+    p.value = `Pr(>|t|)`
+  )%>%
+  # BH correction
+  mutate(
+    p.adj = p.adjust(p.value, method = "BH")
+  ) 
+
+ results_sig <- results %>%
+   filter(p.adj <= 0.1)
+ 
+ results_sig
+ 
+ results <- results %>%
+  mutate(
+    p_value = pmax(p.value, .Machine$double.xmin),
+    signed_log10_p = sign(estimate) * -log10(p.value)
+  )
+ 
+ timepoint_order <- c(
+  "Post_Surgery",
+  "Inflammation",
+  "Proliferation",
+  "Maturation I",
+  "Maturation II"
+)
+
+results <- results %>%
+  mutate(
+    Time_Group = factor(
+      Time_Group,
+      levels = timepoint_order
+    )
+  )
+
+ score_matrix <- results %>%
+  dplyr::select(Genus, Time_Group, signed_log10_p) %>%
+  pivot_wider(
+    names_from = Time_Group,
+    values_from = signed_log10_p
+  ) %>%
+  column_to_rownames("Genus") %>%
+  as.matrix()
+ 
+ 
+ timepoint_pairs <- combn(
+  colnames(score_matrix),
+  2,
+  simplify = FALSE
+)
+
+cor_results <- map_dfr(
+  timepoint_pairs,
+  function(pair) {
+    keep <- complete.cases(score_matrix[, pair])
+
+    if (sum(keep) < 3) {
+      return(tibble(
+        Timepoint_1 = pair[1],
+        Timepoint_2 = pair[2],
+        N_genera = sum(keep),
+        rho = NA_real_,
+        p_value = NA_real_
+      ))
+    }
+
+    test <- cor.test(
+      score_matrix[keep, pair[1]],
+      score_matrix[keep, pair[2]],
+      method = "spearman",
+      exact = FALSE
+    )
+
+    tibble(
+      Timepoint_1 = pair[1],
+      Timepoint_2 = pair[2],
+      N_genera = sum(keep),
+      rho = unname(test$estimate),
+      p_value = test$p.value
+    )
+  }
+) %>%
+  mutate(
+    p_adj = p.adjust(p_value, method = "BH"),
+    FDR_significant = p_adj < 0.1
+  )
+
+cor_results
+
+heatmap_matrix <- score_matrix[
+  complete.cases(score_matrix),
+  ,
+  drop = FALSE
+]
+ 
+
+signed_max <- max(abs(heatmap_matrix), na.rm = TRUE)
+
+col_fun <- circlize::colorRamp2(
+  c(-signed_max, 0, signed_max),
+  c("#2166AC", "white", "#B2182B")
+)
+ timepoint_order <- c(
+  "Post_Surgery",
+  "Inflammation",
+  "Proliferation",
+  "Maturation I",
+  "Maturation II"
+)
+
+heatmap_matrix_ordered <- heatmap_matrix[
+  ,
+  timepoint_order[timepoint_order %in% colnames(heatmap_matrix)],
+  drop = FALSE
+]
+
+ht <- ComplexHeatmap::Heatmap(
+  heatmap_matrix_ordered,
+  name = "Signed\n-log10(p)",
+  col = col_fun,
+
+  cluster_rows = TRUE,
+  cluster_columns = FALSE,
+  column_order = seq_len(ncol(heatmap_matrix_ordered)),
+
+  clustering_distance_rows = "euclidean",
+  clustering_method_rows = "complete",
+
+  na_col = "grey90",
+  column_title = "Surgical Sites",
+  column_title_gp = grid::gpar(fontsize = 12),
+  row_title = "Genus",
+  row_title_gp = grid::gpar(fontsize = 10),
+  row_names_side = "right",
+  row_names_gp = grid::gpar(fontsize = 7)
+)
+
+plot(ht)
+```
+
+## Control Samples
+```{r, fig.width=8, fig.height=11, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE} 
+ # model the genus identified in Wilcoxen test as significant
+species_df_sub <- genus_clr_df_ctrl %>%
+  filter(Genus %in% significant_genera_list)
+  
+species_df_sub <- species_df_sub %>%
+  mutate(
+    Time_Group = relevel(Time_Group, ref = "Before_Surgery")   
+  )
+ 
+
+genus_models <- species_df_sub %>%
+  group_by(Genus) %>%
+  group_nest() %>%
+  mutate(
+    model = map(
+      data,
+      ~ lmerTest::lmer(Abundance ~ Time_Group + (1 | Dog_ID), data = .x)
+    ),
+    sum_tbl = map(model, ~ summary(.x))
+  )
+ 
+
+# Extract coefficient tables with p-values AND the fixed effect (Time_Group)
+results <- genus_models %>%
+  mutate(
+    coefs = map(
+      model,
+      ~ as.data.frame(summary(.x)$coefficients) %>%
+        tibble::rownames_to_column("Term")
+    )
+  ) %>%
+  dplyr::select(Genus, coefs) %>%
+  unnest(coefs) %>%
+  filter(grepl("^Time_Group", Term)) %>%
+  mutate(
+    Time_Group = sub("^Time_Group", "", Term)
+  )
+
+# Rename columns if needed (lmerTest gives: Estimate, Std. Error, df, t value, Pr(>|t|))
+results <- results %>%
+  rename(
+    estimate = Estimate,
+    std.error = `Std. Error`,
+    df = df,
+    statistic = `t value`,
+    p.value = `Pr(>|t|)`
+  )%>%
+  # BH correction
+  mutate(
+    p.adj = p.adjust(p.value, method = "BH")
+  ) 
+
+ results_sig <- results %>%
+   filter(p.adj <= 0.1)
+ 
+ results_sig
+ 
+ results <- results %>%
+  mutate(
+    p_value = pmax(p.value, .Machine$double.xmin),
+    signed_log10_p = sign(estimate) * -log10(p.value)
+  )
+ 
+ timepoint_order <- c(
+  "Post_Surgery",
+  "Inflammation",
+  "Proliferation",
+  "Maturation I",
+  "Maturation II"
+)
+
+results <- results %>%
+  mutate(
+    Time_Group = factor(
+      Time_Group,
+      levels = timepoint_order
+    )
+  )
+
+ score_matrix <- results %>%
+  dplyr::select(Genus, Time_Group, signed_log10_p) %>%
+  pivot_wider(
+    names_from = Time_Group,
+    values_from = signed_log10_p
+  ) %>%
+  column_to_rownames("Genus") %>%
+  as.matrix()
+ 
+ 
+ timepoint_pairs <- combn(
+  colnames(score_matrix),
+  2,
+  simplify = FALSE
+)
+
+cor_results <- map_dfr(
+  timepoint_pairs,
+  function(pair) {
+    keep <- complete.cases(score_matrix[, pair])
+
+    if (sum(keep) < 3) {
+      return(tibble(
+        Timepoint_1 = pair[1],
+        Timepoint_2 = pair[2],
+        N_genera = sum(keep),
+        rho = NA_real_,
+        p_value = NA_real_
+      ))
+    }
+
+    test <- cor.test(
+      score_matrix[keep, pair[1]],
+      score_matrix[keep, pair[2]],
+      method = "spearman",
+      exact = FALSE
+    )
+
+    tibble(
+      Timepoint_1 = pair[1],
+      Timepoint_2 = pair[2],
+      N_genera = sum(keep),
+      rho = unname(test$estimate),
+      p_value = test$p.value
+    )
+  }
+) %>%
+  mutate(
+    p_adj = p.adjust(p_value, method = "BH"),
+    FDR_significant = p_adj < 0.1
+  )
+
+cor_results
+
+heatmap_matrix <- score_matrix[
+  complete.cases(score_matrix),
+  ,
+  drop = FALSE
+]
+ 
+
+signed_max <- max(abs(heatmap_matrix), na.rm = TRUE)
+
+col_fun <- circlize::colorRamp2(
+  c(-signed_max, 0, signed_max),
+  c("#2166AC", "white", "#B2182B")
+)
+ timepoint_order <- c(
+  "Post_Surgery",
+  "Inflammation",
+  "Proliferation",
+  "Maturation I",
+  "Maturation II"
+)
+
+heatmap_matrix_ordered <- heatmap_matrix[
+  ,
+  timepoint_order[timepoint_order %in% colnames(heatmap_matrix)],
+  drop = FALSE
+]
+
+ht <- ComplexHeatmap::Heatmap(
+  heatmap_matrix_ordered,
+  name = "Signed\n-log10(p)",
+  col = col_fun,
+
+  cluster_rows = TRUE,
+  cluster_columns = FALSE,
+  column_order = seq_len(ncol(heatmap_matrix_ordered)),
+
+  clustering_distance_rows = "euclidean",
+  clustering_method_rows = "complete",
+
+  na_col = "grey90",
+  column_title = "Control Sites",
+  column_title_gp = grid::gpar(fontsize = 12),
+  row_title = "Genus",
+  row_title_gp = grid::gpar(fontsize = 10),
+  row_names_side = "right",
+  row_names_gp = grid::gpar(fontsize = 7)
+)
+
+plot(ht)
+```
+
+  
+
+ 
+```{r, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
+sessionInfo()
+```
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+  
+ 
+ 
+ 
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE} 
+
+# Differential Abundance
+# get mean relative abundance for each phylum
+phy_phyla_df <- psmelt(ps_rel_2) %>%
+  filter(Sample_Location == "Stifle") %>%
+  filter(!is.na(Phylum)) %>%
+  group_by(Phylum) %>%
+  summarise(mean_rel_abundance = mean(Abundance, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(mean_rel_abundance))
+
+top_phyla <- phy_phyla_df$Phylum[1:min(10, nrow(phy_phyla_df))]
+
+# Recode non-top phyla as Other
+phy_phyla_df <- ps_rel_2 %>%
+  subset_samples(Surgery_Type == "Stifle") %>%
+  psmelt() %>%
+  mutate(
+    Phylum = if_else(Phylum %in% top_phyla, as.character(Phylum), "Other"),
+    Sample_Site = factor(Sample_Site, levels = c("Control", "Surgical")),
+    Day_Order = factor(Day_Order, levels = sort(unique(Day_Order)))
+  ) %>%
+  group_by(Sample_Site, Day_Order, Phylum) %>%
+  summarise(mean_rel_abundance = mean(Abundance, na.rm = TRUE), .groups = "drop")%>%
+  arrange(desc(mean_rel_abundance))
+ 
+
+# Colors for top 10 + Other
+all_phyla <- c(top_phyla, "Other")
+n_phyla <- length(all_phyla)
+base_cols <- brewer.pal(min(n_phyla, 12), "Paired")
+phylum_cols_vec <- colorRampPalette(base_cols)(n_phyla)
+phylum_colors <- setNames(phylum_cols_vec, all_phyla)
+
+plot_site <- function(site_name) {
+  ggplot(
+    phy_phyla_df %>% filter(Sample_Site == site_name),
+    aes(x = Day_Order, y = mean_rel_abundance, fill = factor(Phylum, levels = all_phyla))
+  ) +
+    geom_col(position = "stack") +
+    scale_fill_manual(values = phylum_colors, drop = FALSE) +
+    labs(
+      title = paste("Sample-Site:", site_name),
+      x = "Timepoint",
+      y = "Average Relative abundance",
+      fill = "Phylum"
+    ) +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+ 
+
+p_control  <- plot_site("Control")
+p_surgical <- plot_site("Surgical")
+  
+print(p_control)
+print(p_surgical)
+
+ 
+
+# get mean relative abundance for each family
+family_df <- psmelt(ps_rel_2) %>%
+  filter(Sample_Location == "Stifle") %>%
+  filter(!is.na(Family)) %>%
+  group_by(Phylum, Family) %>%
+  summarise(mean_rel_abundance = mean(Abundance, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(mean_rel_abundance)) 
+
+top_10_family <- family_df$Family[1:min(10, nrow(family_df))]
+
+# Recode non-top genus as Other
+family_df <- ps_rel_2 %>%
+  subset_samples(Surgery_Type == "Stifle") %>%
+  psmelt() %>%
+  mutate(
+    Family = if_else(Family %in% top_10_family, as.character(Family), "Other"),
+    Sample_Site = factor(Sample_Site, levels = c("Control", "Surgical")),
+    Day_Order = factor(Day_Order, levels = sort(unique(Day_Order)))
+  ) %>%
+  group_by(Dog_ID, Sample_Site, Day_Order, Family) %>%
+  summarise(mean_rel_abundance = mean(Abundance, na.rm = TRUE), .groups = "drop")%>%
+  arrange(desc(mean_rel_abundance))
+ 
+
+# Colors for top 10 + Other
+all_family <- c(top_10_family, "Other")
+n_family <- length(all_family)
+base_cols <- brewer.pal(min(n_family, 12), "Paired")
+cols_vec <- colorRampPalette(base_cols)(n_family)
+colors <- setNames(cols_vec, all_family)
+
+plot_site <- function(site_name) {
+  ggplot(
+    family_df %>% filter(Sample_Site == site_name),
+    aes(x = Day_Order, y = mean_rel_abundance, fill = factor(Family, levels = all_family))
+  ) +
+    geom_col(position = "stack") +
+    scale_fill_manual(values = colors, drop = FALSE) +
+    labs(
+      title = paste("Sample-Site:", site_name),
+      x = "Timepoint",
+      y = "Average Relative abundance",
+      fill = "Family"
+    ) +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+ 
+
+p_control  <- plot_site("Control")
+p_surgical <- plot_site("Surgical")
+ 
+p_control
+p_surgical
+
+
+# get mean relative abundance for each genus
+phy_genus_df <- psmelt(ps_rel_2) %>%
+  filter(Sample_Location == "Stifle") %>%
+  filter(!is.na(Genus)) %>%
+  group_by(Phylum, Genus) %>%
+  summarise(mean_rel_abundance = mean(Abundance, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(mean_rel_abundance)) 
+
+top_genus <- phy_genus_df$Genus[1:min(10, nrow(phy_genus_df))]
+
+# Recode non-top genus as Other
+phy_genus_df <- ps_rel_2 %>%
+  subset_samples(Surgery_Type == "Stifle") %>%
+  psmelt() %>%
+  mutate(
+    Genus = if_else(Genus %in% top_genus, as.character(Genus), "Other"),
+    Sample_Site = factor(Sample_Site, levels = c("Control", "Surgical")),
+    Day_Order = factor(Day_Order, levels = sort(unique(Day_Order)))
+  ) %>%
+  group_by(Sample_Site, Day_Order, Genus) %>%
+  summarise(mean_rel_abundance = mean(Abundance, na.rm = TRUE), .groups = "drop")%>%
+  arrange(desc(mean_rel_abundance))
+ 
+
+# Colors for top 10 + Other
+all_genus <- c(top_genus, "Other")
+n_genus <- length(all_genus)
+base_cols <- brewer.pal(min(n_genus, 12), "Paired")
+genus_cols_vec <- colorRampPalette(base_cols)(n_genus)
+genus_colors <- setNames(genus_cols_vec, all_genus)
+
+plot_site <- function(site_name) {
+  ggplot(
+    phy_genus_df %>% filter(Sample_Site == site_name),
+    aes(x = Day_Order, y = mean_rel_abundance, fill = factor(Genus, levels = all_genus))
+  ) +
+    geom_col(position = "stack") +
+    scale_fill_manual(values = genus_colors, drop = FALSE) +
+    labs(
+      title = paste("Sample-Site:", site_name),
+      x = "Timepoint",
+      y = "Average Relative abundance",
+      fill = "Genus"
+    ) +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+ 
+
+p_control  <- plot_site("Control")
+p_surgical <- plot_site("Surgical")
+ 
+p_control
+p_surgical
+
+
+
+species_df <- psmelt(ps_rel_2) %>%
+  filter(Sample_Location == "Stifle") %>%
+  filter(!is.na(Species)) %>%
+  group_by(Species) %>%
+  summarise(mean_rel_abundance = mean(Abundance, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(mean_rel_abundance))
+
+top_species <- species_df$Species[1:min(10, nrow(species_df))]
+
+# Recode non-top phyla as Other
+species_df <- ps_rel_2 %>%
+  subset_samples(Surgery_Type == "Stifle") %>%
+  psmelt() %>%
+  mutate(
+    Species = if_else(Species %in% top_phyla, as.character(Species), "Other"),
+    Sample_Site = factor(Sample_Site, levels = c("Control", "Surgical")),
+    Day_Order = factor(Day_Order, levels = sort(unique(Day_Order)))
+  ) %>%
+  group_by(Sample_Site, Day_Order, Species) %>%
+  summarise(mean_rel_abundance = mean(Abundance, na.rm = TRUE), .groups = "drop")%>%
+  arrange(desc(mean_rel_abundance))
+ 
+
+# Colors for top 10 + Other
+all_phyla <- c(top_phyla, "Other")
+n_phyla <- length(all_phyla)
+base_cols <- brewer.pal(min(n_phyla, 12), "Paired")
+phylum_cols_vec <- colorRampPalette(base_cols)(n_phyla)
+phylum_colors <- setNames(phylum_cols_vec, all_phyla)
+
+plot_site <- function(site_name) {
+  ggplot(
+    species_df %>% filter(Sample_Site == site_name),
+    aes(x = Day_Order, y = mean_rel_abundance, fill = factor(Species, levels = all_phyla))
+  ) +
+    geom_col(position = "stack") +
+    scale_fill_manual(values = phylum_colors, drop = FALSE) +
+    labs(
+      title = paste("Sample-Site:", site_name),
+      x = "Timepoint",
+      y = "Average Relative abundance",
+      fill = "Species"
+    ) +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+ 
+
+p_control  <- plot_site("Control")
+p_surgical <- plot_site("Surgical")
+  
+print(p_control)
+print(p_surgical)
+
+```
+
+ 
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE}
+sd <- as(sample_data(ps_rel_2), "data.frame")
+
+sd$Time_Group <- ifelse(
+  sd$Day_Order %in% c("Admission", "Day 0a - Pre Surgery"),
+  "Before",
+  "After"
+)
+
+sd$Time_Group <- factor(sd$Time_Group, levels = c("Before", "After"))
+sample_data(ps_rel_2) <- sample_data(sd)
+
+# get mean relative abundance for each phylum
+phy_phyla_df <- psmelt(ps_rel_2) %>%
+  filter(Sample_Location == "Stifle") %>%
+  filter(!is.na(Phylum)) %>%
+  group_by(Phylum) %>%
+  summarise(mean_rel_abundance = mean(Abundance, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(mean_rel_abundance))
+ 
+
+surg_df_phyla <- psmelt(ps_rel_2)%>%
+  filter(
+    Sample_Location == "Stifle",
+    #Sample_Site == "Surgical",
+    Day_Order %in% c("Admission", "Day 0a - Pre Surgery", "Day 0c - Post Surgery", "Day 1"),
+    !is.na(Phylum)
+  ) %>%
+  group_by(Dog_ID, Time_Group, Sample_Site, Phylum) %>%
+  summarise(mean_rel_abundance = mean(Abundance, na.rm = TRUE), .groups = "drop")
+
+results_phyla <- surg_df_phyla %>%
+  tidyr::pivot_wider(
+    id_cols = c(Dog_ID, Phylum, Sample_Site),
+    names_from = Time_Group,
+    values_from = mean_rel_abundance
+  ) %>%
+  group_by(Sample_Site) %>%
+  filter((Before > 0) | (After > 0))  %>%
+  summarise(
+    n_pairs = n(),
+    stat = wilcox.test(Before, After, paired = TRUE, exact = FALSE)$statistic,
+    p = wilcox.test(Before, After, paired = TRUE, exact = FALSE)$p.value,
+    estimate = test[[1]]$estimate,
+    conf_low = test[[1]]$conf.int[1],
+    conf_high = test[[1]]$conf.int[2],
+    .groups = "drop"
+  ) %>%
+    .groups = "drop"
+  ) %>%
+  mutate(p_adj = p.adjust(p, method = "BH")) %>%
+  arrange(p_adj)
+
+print(results_phyla)
+
+# Post-Hoc 
+results_phyla <- surg_df_phyla %>%
+  filter(mean_rel_abundance > 0.0001) %>% 
+  tidyr::pivot_wider(
+    id_cols = c(Dog_ID, Phylum, Sample_Site),
+    names_from = Time_Group,
+    values_from = mean_rel_abundance
+  ) %>%
+  group_by(Sample_Site) %>%
+  filter(!is.na(Before), !is.na(After)) %>%
+  summarise(
+    n_pairs = n(),
+    stat = wilcox.test(Before, After, paired = TRUE, exact = FALSE)$statistic,
+    p = wilcox.test(Before, After, paired = TRUE, exact = FALSE)$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(p_adj = p.adjust(p, method = "BH")) %>%
+  arrange(p_adj)
+
+print(results_phyla)
+ 
+ 
+## Genus 
+ 
+surg_df_phyla <- psmelt(ps_rel_2)%>%
+  filter(
+    Sample_Location == "Stifle",
+    #Sample_Site == "Surgical",
+    Day_Order %in% c("Admission", "Day 0a - Pre Surgery", "Day 0c - Post Surgery", "Day 1"),
+    !is.na(Genus)
+  ) %>%
+  group_by(Dog_ID, Time_Group, Sample_Site, Genus) %>%
+  summarise(mean_rel_abundance = mean(Abundance, na.rm = TRUE), .groups = "drop")
+
+
+results_phyla <- surg_df_phyla %>%
+  tidyr::pivot_wider(
+    id_cols = c(Dog_ID, Genus, Sample_Site),
+    names_from = Time_Group,
+    values_from = mean_rel_abundance
+  ) %>%
+  group_by(Sample_Site) %>%
+  filter((Before > 0.001) | (After > 0.001))  %>%
+  summarise(
+    n_pairs = n(),
+    stat = wilcox.test(Before, After, paired = TRUE, exact = FALSE)$statistic,
+    p = wilcox.test(Before, After, paired = TRUE, exact = FALSE)$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(p_adj = p.adjust(p, method = "BH")) %>%
+  arrange(p_adj)
+
+print(results_phyla)
+
+results_phyla <- surg_df_phyla %>%
+  tidyr::pivot_wider(
+    id_cols = c(Dog_ID, Genus),
+    names_from = Time_Group,
+    values_from = mean_rel_abundance
+  ) %>%
+  group_by(Genus) %>%
+  filter((Before > 0), (After > 0)) %>% 
+  summarise(
+    n_pairs = n(),
+    stat = wilcox.test(Before, After, paired = TRUE, exact = FALSE)$statistic,
+    p = wilcox.test(Before, After, paired = TRUE, exact = FALSE)$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(p_adj = p.adjust(p, method = "BH")) %>%
+  arrange(p_adj)
+
+print(results_phyla)
+
+
+## Species 
+
+surg_df_species <- psmelt(ps_rel_2) %>% 
+  filter(
+ #  Sample_Location == "Stifle", 
+    Sample_Site == "Surgical", 
+    Day_Order %in% c("Admission", "Day 0a - Pre Surgery", "Day 0c - Post Surgery", "Day 1"), 
+    !is.na(Species) 
+  ) %>%
+  group_by(Dog_ID, Time_Group, Genus, Species) %>% 
+  summarise(mean_rel_abundance = mean(Abundance, na.rm = TRUE), .groups = "drop")
+
+results_phyla <- surg_df_species %>% 
+  pivot_wider(
+    id_cols = c(Dog_ID, Genus, Species), 
+    names_from = Time_Group, 
+    values_from = mean_rel_abundance
+  ) %>% 
+  filter(!is.na(Before), !is.na(After)) %>%
+  filter((Before > 0.001) | (After > 0.001))  %>%
+  # 4. Group strictly by the taxonomic level you are testing
+  group_by(Genus, Species) %>% 
+  
+  # 5. Run the statistical analysis safely
+  summarise(
+    n_pairs = n(),
+    # Explicitly calculate the test statistics
+    stat = wilcox.test(Before, After, paired = TRUE, exact = FALSE)$statistic,
+    p = wilcox.test(Before, After, paired = TRUE, exact = FALSE)$p.value,
+    .groups = "drop"
+  ) %>% 
+  
+  # 6. Apply Benjamini-Hochberg false discovery rate correction
+  mutate(p_adj = p.adjust(p, method = "BH")) %>% 
+  arrange(p)
+
+print(results_phyla)
+
+```
+
+ 
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE}
+library(lefser)
+library(SummarizedExperiment) 
+ps_rel_2_surg <- ps_rel_2 %>%
+  subset_samples(
+    Sample_Site == "Surgical")%>% 
+  subset_samples(Day_Order %in% c("Admission", "Day 0a - Pre Surgery", "Day 0c - Post Surgery")) %>% 
+  subset_taxa(!is.na(Species)) 
+
+# Total ASVs across surgical samples from pre- and post-surgery timepoints 
+phyloseq::ntaxa(ps_rel_2_surg)
+ 
+
+
+sd <- as(sample_data(ps_rel_2_surg), "data.frame")
+
+sd$Time_Group <- ifelse(
+  sd$Day_Order %in% c("Admission", "Day 0a - Pre Surgery"),
+  "Before",
+  "After"
+)
+sd$Dog_ID <- factor(sd$Dog_ID)
+sd$Time_Group <- factor(sd$Time_Group, levels = c("Before", "After"))
+sample_data(ps_rel_2_surg) <- sample_data(sd)
+
+
+
+keep <- phyloseq::filter_taxa(
+  ps_rel_2_surg,
+  function(x) {
+    sd <- phyloseq::sample_data(ps_rel_2_surg_filt)
+    adm  <- sd$Day_Order == "Admission"
+    pre  <- sd$Day_Order == "Day 0a - Pre Surgery"
+    post <- sd$Day_Order == "Day 0c - Post Surgery"
+
+    # Require presence in all three timepoints
+    present_all <- any(x[adm] > 0) && any(x[pre] > 0) && any(x[post] > 0)
+
+    prevalence_all <- mean(x > 0) >= 0.05
+
+    present_all && prevalence_all
+  },
+  prune = FALSE
+)
+
+ps_rel_2_surg_filt <- phyloseq::prune_taxa(keep, ps_rel_2_surg)
+phyloseq::ntaxa(ps_rel_2_surg_filt)
+
+
+ps_lefse <- ps_rel_2_surg_filt  
+ 
+
+ps_lefse <- tax_glom(ps_lefse, taxrank = "Species", NArm = TRUE)
+ 
+
+ps_surgical <- subset_samples(ps_lefse, Sample_Site == "Surgical")
+ps_surgical <- prune_taxa(taxa_sums(ps_surgical) > 0, ps_surgical)
+ 
+keep_dogs <- sample_data(ps_surgical) |>
+  data.frame() |>
+  dplyr::group_by(Dog_ID) |>
+  dplyr::filter(all(c("Admission", "Day 0a - Pre Surgery", "Day 0c - Post Surgery") %in% Day_Order)) |>
+  dplyr::distinct(Dog_ID) |>
+  dplyr::pull(Dog_ID)
+
+ps_surgical <- prune_samples(sample_data(ps_surgical)$Dog_ID %in% keep_dogs, ps_surgical)
+
+## Split data tables
+counts <- as(otu_table(ps_surgical), "matrix")
+if (!taxa_are_rows(otu_table(ps_surgical))) {
+  counts <- t(counts)
+}
+coldata <- as(sample_data(ps_surgical), "data.frame")
+
+
+## Create a SummarizedExperiment object
+se <- SummarizedExperiment(assays = list(counts = counts), colData = coldata)
+
+ 
+table(colData(se)$Time_Group, colData(se)$Dog_ID)
+
+set.seed(1234)
+res <- lefser(
+  se,
+  kruskal.threshold = .1, wilcox.threshold = .1,
+  classCol = "Time_Group" 
+) 
+
+lefserPlot(res)
+```
+ 
+ 
+ 
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE} 
+
+# Differential Abundance
+# get mean relative abundance for each phylum
+  
+
+species_df_summary <- species_df %>% 
+  mutate(genus_species = paste(Genus, Species, sep = " ")) %>%
+  group_by(Day_Order, Genus, Species, genus_species) %>% 
+  summarise(
+    mean_rel_abundance = mean(mean_rel_abundance, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+species_list <- unique(species_df_summary$genus_species)
+
+# Colors for top 10 + Other
+all_species <- c(species_list)
+n_taxa <- length(all_species)
+base_cols <- brewer.pal(min(n_taxa, 12), "Paired")
+taxa_cols_vec <- colorRampPalette(base_cols)(n_taxa)
+taxa_colors <- setNames(taxa_cols_vec, all_species)
+
+species_df_summary %>%
+  mutate(genus_species = factor(genus_species, levels = all_species)) %>%
+  ggplot(aes(x = Day_Order, y = mean_rel_abundance, fill = genus_species)) +
+  geom_col(position = "stack") +
+  scale_fill_manual(values = taxa_colors, drop = FALSE) +
+  labs(
+    title = paste("Taxa in Pre-Survery vs. Post-Surgery Samples"),
+    x = "Timepoint",
+    y = "Average Relative abundance",
+    fill = "Species"
+  ) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ 
+ 
+ 
+ 
+
+```
+ 
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE}
+ ## Species 
+
+ctrl_df_species <- psmelt(ps_rel_2) %>% 
+  filter(
+ #  Sample_Location == "Stifle", 
+    Sample_Site == "Control", 
+    Day_Order %in% c("Admission", "Day 0a - Pre Surgery", "Day 0c - Post Surgery", "Day 1"), 
+    !is.na(Species) 
+  ) %>%
+  group_by(Dog_ID, Time_Group, Genus, Species) %>% 
+  summarise(mean_rel_abundance = mean(Abundance, na.rm = TRUE), .groups = "drop")
+
+ 
+
+results_phyla <- ctrl_df_species %>% 
+  pivot_wider(
+    id_cols = c(Dog_ID, Genus, Species), 
+    names_from = Time_Group, 
+    values_from = mean_rel_abundance
+  ) %>% 
+  filter(!is.na(Before), !is.na(After)) %>%
+  filter((Before > 0.001) | (After > 0.001))  %>%
+  # 4. Group strictly by the taxonomic level you are testing
+  group_by(Genus, Species) %>% 
+  
+  # 5. Run the statistical analysis safely
+  summarise(
+    n_pairs = n(),
+    # Explicitly calculate the test statistics
+    stat = wilcox.test(Before, After, paired = TRUE, exact = FALSE)$statistic,
+    p = wilcox.test(Before, After, paired = TRUE, exact = FALSE)$p.value,
+    .groups = "drop"
+  ) %>% 
+  
+  # 6. Apply Benjamini-Hochberg false discovery rate correction
+  mutate(p_adj = p.adjust(p, method = "BH")) %>% 
+  arrange(p)
+
+print(results_phyla)
+```
+ 
+  
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE} 
+results_species_annotated_notsig <- results_species_annotated %>%
+  filter(results_species_annotated$p > 0.05)
+
+results_species_annotated_notsig
+shared_seqs <- intersect(results_species_annotated_sig$OTU, asvs_negative_samples$ASV)
+
+subset_not_in_negatives <- results_species_annotated_sig[
+  !results_species_annotated_sig$OTU %in% asvs_negative_samples$ASV,
+]
+subset_not_in_negatives
+
+
+ 
+
+species_df_formatted_sub <- species_df_formatted %>%
+  filter(OTU == "ASV_114")
+species_long <- species_df_formatted_sub %>%
+  pivot_longer(
+    cols = c(Post_Surgery, Maturation II),
+    names_to = "Timepoint",
+    values_to = "RelAbundance"
+  )
+ggplot(species_long,
+       aes(x = RelAbundance + 1e-6, fill = Timepoint)) +
+  ggtitle("Rel Abundance of Signficant ASV_114 (p.adj <0.1)") +
+  geom_density(alpha = 0.4) +
+  scale_x_log10() +
+  coord_cartesian(ylim = c(0, 2.5)) +
+  theme_bw() +
+  labs(x = "Relative abundance (log10 scale)",
+       y = "Density")
+
+
+species_df_formatted_sub <- species_df_formatted %>%
+  filter(OTU == "ASV_1488")
+species_long <- species_df_formatted_sub %>%
+  pivot_longer(
+    cols = c(Post_Surgery, Maturation),
+    names_to = "Timepoint",
+    values_to = "RelAbundance"
+  )
+ggplot(species_long,
+       aes(x = RelAbundance + 1e-6, fill = Timepoint)) +
+  ggtitle("Rel Abundance of Non-signficant ASV_1488 (p.adj > 0.1)") +
+  geom_density(alpha = 0.4) +
+  scale_x_log10() +
+  coord_cartesian(ylim = c(0, 2.5)) +
+  theme_bw() +
+  labs(x = "Relative abundance (log10 scale)",
+       y = "Density")
+
+
+
+ 
+
+phylum_colors <- c(
+  "Bacillota" = "orange",
+  "Pseudomonadota" = "#e7298a",
+  "Actinomycetota" = "#1f78b4",
+  "Bacteroidota" = "#1b9e77",
+  "Cyanobacteriota" = "#a6761d",
+  "Thermodesulfobacteriota" = "red",
+  "Fusobacteriota" = "yellow",
+  "Campylobacterota" = "#66a61e",
+  "Acidobacteriota" = "green",
+  "Chloroflexota" = "pink",
+  "Other" = "gray"
+)
+
+phylum_counts <- results_species_annotated_sig %>%
+  mutate(Phylum = ifelse(is.na(Phylum) | Phylum == "", "Other", Phylum),
+         Phylum = ifelse(Phylum %in% names(phylum_colors), Phylum, "Other")) %>%
+  count(Phylum, name = "Count") %>%
+  mutate(Phylum = factor(Phylum, levels = Phylum[order(Count, decreasing = TRUE)]))
+
+ggplot(phylum_counts, aes(x = Phylum, y = Count, fill = Phylum)) +
+  ggtitle("Phyla of the 45 ASVs found to have significantly higher relative abundances (p_adj =<= 0.1)") +
+  geom_col() +
+  scale_fill_manual(values = phylum_colors, drop = FALSE) +
+  labs(x = "Phylum", y = "Count") +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"
+  )
+```
+ 
+
+
+
+ 
