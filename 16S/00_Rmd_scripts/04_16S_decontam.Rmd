@@ -50,15 +50,15 @@ library(gt)
 ASV_feature_table_og <- readRDS("../01_input_files/ASV_tables/canine_skin_microbiome_filtered_nochim_asvs.rds")
 
 # Remove rows where row names contain "Air"
-ASV_feature_table_og <- ASV_feature_table_og[!grepl("Air", rownames(ASV_feature_table_og)), , drop = FALSE]
+#ASV_feature_table_og <- ASV_feature_table_og[!grepl("Air", rownames(ASV_feature_table_og)), , drop = FALSE]
 
 # Full metadata 
-sample_metadata_og <- read.delim("../../metadata/CH-All_16S_Metadata_20220124.tsv", header=TRUE)
+sample_metadata_og <- read.delim("../../metadata/01_input_files/CH-All_16S_Metadata_20220124.tsv", header=TRUE)
 # rownames = Samples
 rownames(sample_metadata_og) <- sample_metadata_og$SampleID
 nrow(sample_metadata_og)
 # Remove rows where row names contain "Air"
-sample_metadata_og <- sample_metadata_og[!grepl("Air", sample_metadata_og$SampleID), , drop = FALSE]
+#sample_metadata_og <- sample_metadata_og[!grepl("Air", sample_metadata_og$SampleID), , drop = FALSE]
 nrow(sample_metadata_og)
 # ASV sequences annotated 
 taxa_annotations_og <- readRDS("../01_input_files/ASV_tables/canine_skin_microbiome_filtered_nochim_asvs_taxa_species.rds")
@@ -73,8 +73,8 @@ out_dir <- "../02_output_files/images"
 
 # Input each individual sequencing library DNA concentration for pooling (prior to diluting for sequencing prep)
 
-sample_DNA_library_CH1_clean <- read.csv("../../metadata/PoolCalcs_CH1.csv") %>% 
- filter(!stringr::str_detect(Sample, "Air")) %>%
+sample_DNA_library_CH1_clean <- read.csv("../../metadata/01_input_files/PoolCalcs_CH1.csv") %>% 
+ #filter(!stringr::str_detect(Sample, "Air")) %>%
   filter(!is.na(Well) & Well != "") %>% 
   filter(!is.na(Primer) & Primer == "16S") %>% 
   dplyr::select(Sample, Well, nM) %>%
@@ -87,7 +87,7 @@ sample_DNA_library_CH1_clean <- read.csv("../../metadata/PoolCalcs_CH1.csv") %>%
   dplyr::select(Sample, raw_DNA_conc, pooled_DNA_conc) %>% 
   distinct(Sample, .keep_all = TRUE)
 
-sample_DNA_library_CH2_clean <- read.csv("../../metadata/PoolCalcs_CH2.csv") %>% 
+sample_DNA_library_CH2_clean <- read.csv("../../metadata/01_input_files/PoolCalcs_CH2.csv") %>% 
   mutate(Sample = case_match(
     Sample,
     "Chlor1-16S" ~ "Chlor1b-16S",
@@ -97,7 +97,7 @@ sample_DNA_library_CH2_clean <- read.csv("../../metadata/PoolCalcs_CH2.csv") %>%
   )) %>% 
   filter(!is.na(Well) & Well != "") %>% 
   filter(!is.na(Primer) & Primer == "16S") %>% 
- filter(!stringr::str_detect(Sample, "Air")) %>%
+# filter(!stringr::str_detect(Sample, "Air")) %>%
   dplyr::select(Sample, Well, nM) %>%
   mutate(
     Sample = str_replace_all(Sample, "[_\\s]+", "-"),
@@ -108,10 +108,10 @@ sample_DNA_library_CH2_clean <- read.csv("../../metadata/PoolCalcs_CH2.csv") %>%
   dplyr::select(Sample, raw_DNA_conc, pooled_DNA_conc) %>% 
   distinct(Sample, .keep_all = TRUE)
 
-sample_DNA_library_CH3_clean <- read.csv("../../metadata/PoolCalcs_CH3.csv") %>% 
+sample_DNA_library_CH3_clean <- read.csv("../../metadata/01_input_files/PoolCalcs_CH3.csv") %>% 
   filter(!is.na(Well) & Well != "") %>% 
   filter(!is.na(Primer) & Primer == "16S") %>% 
-  filter(!stringr::str_detect(Sample, "Air")) %>%
+ # filter(!stringr::str_detect(Sample, "Air")) %>%
   dplyr::select(Sample, Well, nM) %>%
   mutate(
     Sample = str_replace_all(Sample, "[_\\s]+", "-"),
@@ -122,7 +122,7 @@ sample_DNA_library_CH3_clean <- read.csv("../../metadata/PoolCalcs_CH3.csv") %>%
   dplyr::select(Sample, raw_DNA_conc, pooled_DNA_conc) %>% 
   distinct(Sample, .keep_all = TRUE)
 
-sample_DNA_library_CH4_clean <- read.csv("../../metadata/PoolCalcs_CH4.csv") %>% 
+sample_DNA_library_CH4_clean <- read.csv("../../metadata/01_input_files/PoolCalcs_CH4.csv") %>% 
   mutate(Sample = case_match(
     Sample,
     "CH5 Kit Ctrl 16S" ~ "CH5b-Kit-Ctrl-16S",
@@ -130,7 +130,7 @@ sample_DNA_library_CH4_clean <- read.csv("../../metadata/PoolCalcs_CH4.csv") %>%
   )) %>% 
   filter(!is.na(Well) & Well != "") %>% 
   filter(!is.na(Primer) & Primer == "16S") %>% 
-  filter(!stringr::str_detect(Sample, "Air")) %>%
+ # filter(!stringr::str_detect(Sample, "Air")) %>%
   dplyr::select(Sample, Well, nM) %>%
   mutate(
     Sample = str_replace_all(Sample, "[_\\s]+", "-"),
@@ -171,7 +171,7 @@ tapply(colSums(ASV_feature_table_og), taxa_annotations_og[,"Phylum"], sum)/sum(A
 
 ## Define negative controls
 ```{r, message=FALSE, warning=FALSE, echo=TRUE}
-sample_metadata_subset$NegativeControl <- grepl("Chlorhex|Kit", sample_metadata_subset$Sample_Site)
+sample_metadata_subset$NegativeControl <- grepl("Chlorhex|Kit|Air", sample_metadata_subset$Sample_Site)
 table(sample_metadata_subset$Sample_Site, sample_metadata_subset$NegativeControl)
 
 class(sample_metadata_subset$raw_DNA_conc)
@@ -220,7 +220,7 @@ save_kable(
 )
  
  
-sample_metadata_subset_dogs <- subset(sample_metadata_subset, !grepl("Chlor|Kit", Individual))
+sample_metadata_subset_dogs <- subset(sample_metadata_subset, !grepl("Chlor|Kit|Air", Individual))
 
 dog_library_table <- with(
   subset(sample_metadata_subset_dogs),
