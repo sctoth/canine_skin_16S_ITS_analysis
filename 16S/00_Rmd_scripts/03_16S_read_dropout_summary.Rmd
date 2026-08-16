@@ -30,7 +30,7 @@ library(cowplot)
 ```{r summary-table-individual, echo=TRUE}
  
 all_data <- read.csv("../01_input_files/csv_files/seqruns_final_summary_read_counts.csv")
-sample_metadata_og <- read.delim("../../metadata/CH-All_16S_Metadata_20220124.tsv", header=TRUE)
+sample_metadata_og <- read.delim("../../metadata/01_input_files/CH-All_16S_Metadata_20220124.tsv", header=TRUE)
 
 all_data <- all_data %>% 
   rename(
@@ -55,7 +55,20 @@ all_data <- all_data %>%
     sample_metadata_og %>% dplyr::select(Sample_Unique, Sample_Plate), 
     by = c("Sample" = "Sample_Unique")
   )
- 
+
+ggplot(all_data, aes(x = Total_Reads, y = Truncated_Reads)) +
+  geom_point(size = 2.5, alpha = 0.8, color = "#2C7FB8") +
+  scale_y_continuous(labels = comma) +
+  labs(
+    x = "Total_Reads",
+    y = "Truncated_Reads",
+    title = "Truncated_Reads per sample"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.y = element_text(size = 7),
+    plot.title = element_text(face = "bold")
+  )
  
 
 summary_by_run <- all_data %>%

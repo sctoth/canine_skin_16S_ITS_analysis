@@ -229,6 +229,8 @@ dog_library_table_bold[dog_library_table_bold != 0] <- paste0(
 )
 
  
+paste0("Number of dogs: ", length(unique(paired_sample_data$Dog_ID))) 
+paste0("Number of samples: ", length(unique(paired_sample_data$Sample)))
 
 ```
 
@@ -2092,10 +2094,10 @@ ggplot(alphadiv_plot_data_ctrl, aes(x = Day_Order, y = Shannon)) +
 
 
 
-### Plot   
+ 
 
-Surgical Samples
-```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE} 
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE} 
+# Surgical Samples
 tax_df <- as.data.frame(tax_table(ps_rel_2))
 
 # rename genus_species to either Unknown or Genus_sp. 
@@ -2208,9 +2210,9 @@ plot <- species_df_2 %>%
 plot
 ```
  
+ 
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE} 
 Control Samples
-```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE} 
-
 # Subset to just surgical samples  
 ps_rel_2_ctrl <- ps_rel_2 %>%
   subset_samples(
