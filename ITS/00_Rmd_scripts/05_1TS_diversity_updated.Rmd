@@ -1,0 +1,784 @@
+---
+title: "Canine Skin Microbiome: ITS Microbial Diversity Analysis "
+author: "Spencer Toth"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    df_print: paged
+---
+
+**Purpose:**
+Investigate microbial diversity across skin, air and negative control samples.
+
+## Load R packages
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+library(knitr)
+library(FSA)
+library(tidyverse)
+library(vegan)
+library(phyloseq)
+library(ggplot2)
+library(ggtree)
+library(scales)  
+library(RColorBrewer)
+library(segmented)
+library(stringr)
+library(pairwiseAdonis)
+library(ggpubr)
+library(changepoint)
+library(dplyr)
+library(lme4)
+library(emmeans)
+library(nortest)
+library(mcp)
+library(purrr)
+library(kableExtra)
+library(forcats)
+ 
+```
+
+## Create phyloseq objects
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+load("../01_input_files/ASV_tables/decontam_allseqruns_filtered_canine_skin_microbiome.rda")
+ps <- phyloseq(
+  otu_table(ASV_feature_table_decontam, taxa_are_rows = FALSE),
+  sample_data(sample_metadata_decontam),
+  tax_table(taxa_annotations_decontam)
+)
+
+new_ids <- paste0("ASV_", seq_len(ntaxa(ps)))
+
+tax <- as(tax_table(ps), "matrix")
+rownames(tax) <- new_ids
+tax <- cbind(
+  tax,
+  genus_species = paste(tax[, "Genus"], tax[, "Species"], sep = " ")
+)
+
+otu <- as(otu_table(ps), "matrix")
+colnames(otu) <- new_ids
+
+ps <- phyloseq(
+  otu_table(otu, taxa_are_rows = FALSE),
+  sample_data(ps),
+  tax_table(tax)
+)
+
+
+# Get reads and metadata per sample
+reads_per_sample <- sample_sums(ps)
+sample_data <- as(sample_data(ps), "data.frame")
+ 
+sample_names_ps <- sample_names(ps)
+
+# Ensure sample order matches
+if (!all(sample_names_ps == rownames(sample_data))) {
+  sample_data <- sample_data[sample_names_ps, ]
+}
+
+# Create dataframe with sample-level stats
+df <- data.frame(
+  sample = sample_names_ps,
+  total_reads = reads_per_sample,
+  Sample_Plate = sample_data$Sample_Plate,
+  Individual = sample_data$Individual,
+  stringsAsFactors = FALSE
+)
+
+mean_reads <- mean(df$total_reads)
+min_reads  <- min(df$total_reads)
+max_reads  <- max(df$total_reads)
+
+mean_reads
+
+# Calculate total reads and ASVs per sample and add to metadata
+otu <- otu_table(ps)
+if (taxa_are_rows(otu)) {
+  total_asvs <- colSums(otu > 0)
+} else {
+  total_asvs <- rowSums(otu > 0)
+}
+
+total_reads <- sample_sums(ps)
+ 
+sample_data$total_asv <- total_asvs
+sample_data$total_reads <- total_reads
+
+sample_data(ps) <- sample_data(sample_data)
+
+sample_data <- sample_data %>%
+  arrange(Surgery_Type, Individual) %>%
+  mutate(Individual = factor(Individual, levels = unique(Individual)))
+
+my_cols <- colorRampPalette(brewer.pal(8, "Dark2"))(20)
+
+# Aggregate reads and ASVs per Individual 
+by_ind <- aggregate(
+  cbind(total_reads, total_asv) ~ Individual + Sample_Plate,
+  data = sample_data,
+  FUN = sum
+)
+
+print(by_ind)
+```
+
+# Negative Controls Analysis
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+
+ps_negatives <- prune_samples(
+  sample_data(ps)$Location_Type %in% c("Air", "Blank", "Chlorhex"),
+  ps
+)
+
+ps_negatives <- prune_taxa(taxa_sums(ps_negatives) > 0, ps_negatives)
+
+# remove ASVs uncharacterized phyla
+ps_negatives_1 <- subset_taxa(
+  ps_negatives,
+  !is.na(Phylum) & !Phylum %in% c("", "uncharacterized")
+)
+
+ 
+unknown_asvs <- rownames(tax_table(ps_negatives))[
+  is.na(tax_table(ps_negatives)[, "Phylum"]) |
+    tax_table(ps_negatives)[, "Phylum"] %in% c("", "uncharacterized")
+]
+
+unknown_count <- length(unknown_asvs)
+total_asvs <- nrow(tax_table(ps_negatives))
+unknown_percent <- (unknown_count / total_asvs) * 100
+ 
+cat("ASVs with uncharacterized phyla:", unknown_count, "\n")
+cat("% ASVs with uncharacterized phyla:", unknown_percent, "\n")
+
+# remove ASVs uncharacterized phyla
+ps_negatives_1 <- subset_taxa(
+  ps_negatives,
+  !is.na(Phylum) & !Phylum %in% c("", "uncharacterized")
+)
+
+
+ 
+# ASVs removed
+n_asv_before <- ntaxa(ps_negatives)
+n_asv_after  <- ntaxa(ps_negatives_1)
+n_asv_removed <- n_asv_before - n_asv_after
+pct_asv_removed <- 100 * n_asv_removed / n_asv_before
+
+# Reads removed
+reads_before <- sum(otu_table(ps_negatives))
+reads_after  <- sum(otu_table(ps_negatives_1))
+reads_removed <- reads_before - reads_after
+pct_reads_removed <- 100 * reads_removed / reads_before
+
+
+data.frame(
+  metric = c("ASVs", "Reads"),
+  before = c(n_asv_before, reads_before),
+  after = c(n_asv_after, reads_after),
+  removed = c(n_asv_removed, reads_removed),
+  percent_removed = c(pct_asv_removed, pct_reads_removed)
+)
+
+low_depth_samples <- sample_sums(ps_negatives_1)[sample_sums(ps_negatives_1) < 2000]
+
+low_depth_samples
+
+# Remove low-depth samples
+ps_negatives_2 <- prune_samples(sample_sums(ps_negatives_1) >= 2000, ps_negatives_1)
+
+summary(sample_sums(ps_negatives_2))
+
+zero_samples <- sample_names(ps_negatives_2)[sample_sums(ps_negatives_2) == 0]
+
+zero_samples
+
+# Remove samples with all 0s (if applicable)
+ps_negatives_2 <- prune_samples(sample_sums(ps_negatives_2) > 0, ps_negatives_2)
+
+ 
+
+# Normalize read counts by dividing by total read count per sample (relative abundance) 
+ps_negatives_rel_2 <- transform_sample_counts(ps_negatives_2, function(x) x / sum(x))
+
+
+ 
+```
+
+## Top 10 ASVs in Negative Samples
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+otu <- otu_table(ps_negatives_rel_2)
+if (!taxa_are_rows(ps_negatives_rel_2)) {
+  otu <- t(otu)
+}
+
+
+# average relative abundances ASVs
+asv_average_rel_abundance <- rowMeans(otu, na.rm = TRUE)
+
+Sample_Location <- as.data.frame(sample_data(ps_negatives_rel_2))$Sample_Location
+ 
+
+asv_in_kit <- apply(otu, 1, function(x) sum(x[Sample_Location == "Blank"] > 0, na.rm = TRUE))
+asv_in_air <- apply(otu, 1, function(x) sum(x[Sample_Location == "Air"] > 0, na.rm = TRUE))
+asv_in_chlorhex <- apply(otu, 1, function(x) sum(x[Sample_Location == "Chlorhex"] > 0, na.rm = TRUE))
+
+ord <- order(asv_average_rel_abundance, decreasing = TRUE)
+tax <- as.data.frame(tax)
+tax$ASV <- rownames(tax)
+
+asvs_negative_samples <- tibble(
+  ASV = names(asv_average_rel_abundance)[ord],
+  average_rel_abundance = asv_average_rel_abundance[ord],
+  asv_in_kit = asv_in_kit[ord],
+  asv_in_air = asv_in_air[ord],
+  asv_in_chlorhex = asv_in_chlorhex[ord]
+) %>%
+  left_join(tax, by = "ASV") %>%
+  dplyr::select(
+    ASV, average_rel_abundance, asv_in_kit, asv_in_air, asv_in_chlorhex,
+    Phylum, Family, Order, Genus, Species, genus_species
+  )
+
+asvs_negative_samples
+
+top10_asvs <- asvs_negative_samples %>%
+  dplyr::slice_head(n = 10)   
+
+top10_asvs
+
+# total ASVs detected in each negative-control type
+total_asvs_kit <- sum(asv_in_kit > 0, na.rm = TRUE)
+total_asvs_air <- sum(asv_in_air > 0, na.rm = TRUE)
+total_asvs_chlorhex <- sum(asv_in_chlorhex > 0, na.rm = TRUE)
+ 
+cat("Total ASV count in kit samples:", total_asvs_kit, "\n")
+cat("Total ASV count in air samples:", total_asvs_air, "\n")
+cat("Total ASV count in chlorhex samples:", total_asvs_chlorhex, "\n")
+
+```
+
+## Top 10 Phyla in Negative Samples
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+ps_negatives_rel_2_df <- psmelt(ps_negatives_rel_2) 
+
+tax <- as(tax_table(ps_negatives_rel_2), "matrix")
+family_names <- unique(na.omit(tax[, "Phylum"]))
+
+cat("Number of unique Phylum names:", length(family_names), "\n")
+
+ top10_phyla <- ps_negatives_rel_2_df %>%
+  dplyr::group_by(Sample, Phylum) %>%
+  # add up the ASV relative abundances per Phylum in each sample
+  dplyr::summarise(total_abundance = sum(Abundance, na.rm = TRUE), .groups = "drop") %>%
+   dplyr::group_by(Phylum) %>%
+   # get the mean relative abundance across all samples per Phylum
+  dplyr::summarise(mean_rel_abundance = mean(total_abundance, na.rm = TRUE), .groups = "drop") %>%
+  dplyr::arrange(dplyr::desc(mean_rel_abundance)) %>%
+  dplyr::slice_head(n = 10) %>%
+  dplyr::pull(Phylum)
+ 
+top10_phyla
+
+legend_order <- c(
+  "p__Ascomycota",
+  "p__Basidiomycota",
+  "p__Anthophyta",
+  "p__Eukaryota_phy_Incertae_sedis",
+  "p__Mortierellomycota",
+  "p__Mucoromycota",
+  "p__Chytridiomycota"
+)
+
+phylum_colors <- c(
+  "p__Ascomycota"                   = "#1b9e77",
+  "p__Basidiomycota"                = "#a6761d",
+  "p__Anthophyta"                   = "#7570b3",
+  "p__Eukaryota_phy_Incertae_sedis" = "yellow",
+  "p__Mortierellomycota"            = "#d95f02",
+  "p__Mucoromycota"                 = "#e7298a",
+  "p__Chytridiomycota"              = "#66a61e"
+)
+
+ 
+phy_df_2 <- ps_negatives_rel_2_df %>%
+  dplyr::group_by(Sample_Site, Sample, Phylum) %>%
+  dplyr::summarise(total_abundance = sum(Abundance, na.rm = TRUE), .groups = "drop") %>%
+   dplyr::group_by(Sample_Site, Phylum) %>%
+  dplyr::summarise(mean_rel_abundance = mean(total_abundance, na.rm = TRUE), .groups = "drop") %>%
+  dplyr::arrange(dplyr::desc(mean_rel_abundance)) 
+
+phy_df_2 <- phy_df_2[phy_df_2$Phylum %in% top10_phyla, ]
+
+phy_df_2$Phylum <- factor(phy_df_2$Phylum, levels = legend_order)
+
+ggplot(phy_df_2, aes(x = Sample_Site, y = mean_rel_abundance, fill = Phylum, group = Phylum)) +
+  ggtitle("Top 10 Phyla in Negative Samples") +
+  geom_col(position = "stack") +
+  scale_fill_manual(values = phylum_colors, breaks = legend_order, drop = FALSE) +
+  coord_cartesian(ylim = c(0, 1.0)) +
+  labs(x = "Sample Type", y = "Average relative abundance across samples", fill = "Phylum") +
+  
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  
+```
+ 
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE}
+## Family 
+phy_df_1_negatives <- psmelt(ps_negatives_rel_1) 
+
+tax <- as(tax_table(ps_negatives_rel_1), "matrix")
+family_names <- unique(na.omit(tax[, "Family"]))
+
+cat("Number of unique Family names:", length(family_names), "\n")
+
+ top10_phyla <- phy_df_1_negatives %>%
+  dplyr::mutate(Family = dplyr::if_else(is.na(Family), "Unknown", Family)) %>%
+  dplyr::group_by(Sample, Family) %>%
+  # add up the ASV relative abundances per Family in each sample
+  dplyr::summarise(total_abundance = sum(Abundance, na.rm = TRUE), .groups = "drop") %>%
+   dplyr::group_by(Family) %>%
+   # get the mean relative abundance across all samples per Family
+  dplyr::summarise(mean_rel_abundance = mean(total_abundance, na.rm = TRUE), .groups = "drop") %>%
+  dplyr::arrange(dplyr::desc(mean_rel_abundance)) %>%
+  dplyr::slice_head(n = 10) %>%
+  dplyr::pull(Family)
+ 
+legend_order <- c(
+  "Staphylococcaceae",
+  "Streptococcaceae",
+  "Corynebacteriaceae",
+  "Lactobacillaceae",
+  "Moraxellaceae",
+  "Neisseriaceae",
+  "Pseudomonadaceae",
+  "Enterobacteriaceae",
+  "Lysobacteraceae",
+  "Unknown"
+)
+
+phylum_colors <- c(
+  "Unknown" = "gray",
+  "Staphylococcaceae" = "#e7298a",
+  "Streptococcaceae" = "blue",
+  "Neisseriaceae" = "lightblue",
+  "Moraxellaceae" = "#a6761d",
+  "Corynebacteriaceae" = "yellow",
+  "Lactobacillaceae" = "darkgreen",
+  "Pseudomonadaceae" = "green",
+   "Enterobacteriaceae" = "purple",
+  "Lysobacteraceae" = "red",
+  "Other" = "orange"
+)
+
+phy_df_2 <- phy_df_1_negatives %>%
+  dplyr::mutate(Family = dplyr::if_else(is.na(Family), "Unknown", Family)) %>%
+  dplyr::group_by(Sample_Site, Sample, Family) %>%
+  dplyr::summarise(total_abundance = sum(Abundance, na.rm = TRUE), .groups = "drop") %>%
+  dplyr::group_by(Sample_Site, Family) %>%
+  dplyr::summarise(mean_rel_abundance = mean(total_abundance, na.rm = TRUE), .groups = "drop") %>%
+  dplyr::arrange(dplyr::desc(mean_rel_abundance))
+
+phy_df_2 <- phy_df_2 %>%
+  dplyr::filter(Family %in% top10_phyla)
+
+phy_df_2$Family <- factor(phy_df_2$Family, levels = legend_order)
+
+ggplot(phy_df_2, aes(x = Sample_Site, y = mean_rel_abundance, fill = Family)) +
+  ggtitle("Top 10 Families in Negative Samples") +
+  geom_col(position = "stack") +
+  scale_fill_manual(values = phylum_colors, breaks = legend_order, drop = FALSE) +
+  coord_cartesian(ylim = c(0, 1.0)) +
+  labs(x = "Sample Type", y = "Average relative abundance across samples", fill = "Family") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Species in Negative Samples 
+```{r, message=FALSE, warning=FALSE, echo=TRUE} 
+tax <- as(tax_table(ps_negatives_rel_2), "matrix")
+
+no_species <- is.na(tax[, "Species"]) | tax[, "Species"] == "" | tax[, "Species"] == "NA"
+
+count_no_species <- sum(no_species, na.rm = TRUE)
+total_asvs <- nrow(tax)
+pct_no_species <- 100 * count_no_species / total_asvs
+
+cat("ASVs with no species assignment:", count_no_species, "\n")
+cat("Percentage with no species assignment:", round(pct_no_species, 2), "%\n")
+
+```
+
+ 
+# Bioinformatics Analysis
+
+## Taxa-Based Filtering 
+### Remove uncharacterized Phyla
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+ps_positives <- prune_samples(
+  grepl("Skin", sample_data(ps)$Location_Type),
+  ps
+)
+
+otu_matrix <- as(otu_table(ps_positives), "matrix")
+tax <- as(tax_table(ps_positives), "matrix")
+
+unknown_asvs <- rownames(tax)[
+  is.na(tax[, "Phylum"]) | tax[, "Phylum"] %in% c("", "uncharacterized")
+]
+
+ps_1 <- prune_taxa(!taxa_names(ps_positives) %in% unknown_asvs, ps_positives)
+
+ 
+# ASVs removed
+n_asv_before <- ntaxa(ps_positives)
+n_asv_after  <- ntaxa(ps_1)
+n_asv_removed <- n_asv_before - n_asv_after
+pct_asv_removed <- 100 * n_asv_removed / n_asv_before
+
+# Reads removed
+reads_before <- sum(otu_table(ps_positives))
+reads_after  <- sum(otu_table(ps_1))
+reads_removed <- reads_before - reads_after
+pct_reads_removed <- 100 * reads_removed / reads_before
+
+
+data.frame(
+  metric = c("ASVs", "Reads"),
+  before = c(n_asv_before, reads_before),
+  after = c(n_asv_after, reads_after),
+  removed = c(n_asv_removed, reads_removed),
+  percent_removed = c(pct_asv_removed, pct_reads_removed)
+)
+
+low_depth_samples <- sample_sums(ps_1)[sample_sums(ps_1) < 2000]
+
+low_depth_samples
+
+# Remove low-depth samples
+ps_1 <- prune_samples(sample_sums(ps_1) >= 2000, ps_1)
+
+summary(sample_sums(ps_1))
+
+zero_samples <- sample_names(ps_1)[sample_sums(ps_1) == 0]
+
+zero_samples
+
+length(zero_samples)
+
+# Remove samples with all 0s (if applicable)
+ps_1 <- prune_samples(sample_sums(ps_1) > 0, ps_1)
+ 
+ 
+out_dir <- "../01_input_files/phyloseq"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+saveRDS(ps_1, file = file.path(out_dir, "ps_1.rds"))
+ 
+```
+
+### Check: Low-prevalence taxa
+No phyla were removed. 
+```{r, fig.width=11, fig.height=8, echo=TRUE}
+# Compute prevalence for each ASV 
+prevdf = apply(X = otu_table(ps_1),
+               MARGIN = ifelse(taxa_are_rows(ps_1), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+ 
+# Add taxa and total read counts to prevalence df
+prevdf = data.frame(Prevalence = prevdf,
+                    TotalAbundance = taxa_sums(ps_1),
+                    tax_table(ps_1))
+
+# Are there phyla that are comprised of mostly low-prevalence features? 
+# Compute per Phylum: Average number of ASVs and total number of ASVs across samples
+phylum_summary <- plyr::ddply(prevdf, "Phylum", function(df1){
+  cbind(mean(df1$Prevalence), sum(df1$Prevalence))
+})
+colnames(phylum_summary) <- c("Phylum", "Mean_Prevalence", "Sum_Prevalence")
+
+# Phyla by Total ASV Prevalence 
+phylum_summary_sorted <- phylum_summary[order(-phylum_summary$Sum_Prevalence), ]
+print(phylum_summary_sorted, row.names = FALSE)
+ggplot(prevdf, aes(TotalAbundance, Prevalence / nsamples(ps_1),color=Phylum)) +
+  ggtitle("Prevalence of Phyla Across Skin-Swab Samples", subtitle="dashed line = 5% prevalence") +
+  geom_hline(yintercept = 0.05, alpha = 0.5, linetype = 2) +  geom_point(size = 2, alpha = 0.7) +
+  scale_x_log10() +  xlab("Total Abundance") + ylab("Prevalence [Frac. Samples]") +
+  facet_wrap(~Phylum) + theme(legend.position="none") 
+  
+```
+
+## Check: Sequencing Run Batch Effect
+
+### PERMANOVA Test 
+
+**Notes:**
+
+* Batch effects were estimated using PERMANOVA analysis when both batch and Dog_ID were included
+ 
+ 
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+# Normalization using relative abundances
+ps_rel_1 <- transform_sample_counts(ps_1, function(x) x / sum(x))
+
+individual_list <- unique(sample_data(ps_rel_1)$Individual)
+
+bray_dist <- phyloseq::distance(ps_rel_1, method = "bray")
+
+set.seed(100)
+bray_pcoa <- ordinate(ps_rel_1, method = "PCoA", distance =  bray_dist)
+p1 <- plot_ordination(ps_rel_1, bray_pcoa, color = "Sample_Plate")
+
+
+p1 + ggtitle("PCoA of Bray-Curtis Dissimilarities", subtitle = "Ellipses encircle and color samples belonging to the same sequencing run.") +
+  geom_point(size = 1.5) + 
+  theme_bw() +
+  stat_ellipse(aes(fill = Sample_Plate, group = Sample_Plate), alpha = 0.2, geom = "polygon")
+
+
+bray_matrix <- as.matrix(bray_dist)
+
+metadata <- as(sample_data(ps_rel_1), "data.frame")
+ 
+# PERMANOVA test
+set.seed(100)
+adonis2(bray_matrix ~ Sample_Plate + Dog_ID, data = metadata, permutations = 999, by = "terms")  
+
+```
+
+ 
+ 
+ 
+# Skin samples Analysis
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+ unknown_asvs <- rownames(tax_table(ps_rel_1))[
+  is.na(tax_table(ps_rel_1)[, "Phylum"]) |
+    tax_table(ps_rel_1)[, "Phylum"] %in% c("", "uncharacterized")
+]
+
+unknown_count <- length(unknown_asvs)
+total_asvs <- nrow(tax_table(ps_rel_1))
+unknown_percent <- (unknown_count / total_asvs) * 100
+ 
+cat("ASVs with uncharacterized phyla:", unknown_count, "\n")
+cat("% ASVs with uncharacterized phyla:", unknown_percent, "\n")
+
+# remove ASVs uncharacterized phyla
+ps_rel_1 <- subset_taxa(
+  ps_rel_1,
+  !is.na(Phylum) & !Phylum %in% c("", "uncharacterized")
+)
+
+```
+
+## Top 10 ASVs
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+otu <- otu_table(ps_rel_1)
+if (!taxa_are_rows(ps_rel_1)) {
+  otu <- t(otu)
+}
+
+
+# average relative abundances ASVs
+asv_average_rel_abundance <- rowMeans(otu, na.rm = TRUE)
+
+Sample_Location <- as.data.frame(sample_data(ps_rel_1))$Sample_Location
+ 
+
+asv_in_stifle <- apply(otu, 1, function(x) sum(x[Sample_Location == "Stifle"] > 0, na.rm = TRUE))
+asv_in_ab <- apply(otu, 1, function(x) sum(x[Sample_Location == "Abdomen"] > 0, na.rm = TRUE))
+
+
+ord <- order(asv_average_rel_abundance, decreasing = TRUE)
+tax <- as.data.frame(tax)
+tax$ASV <- rownames(tax)
+
+asvs_positive_samples <- tibble(
+  ASV = names(asv_average_rel_abundance)[ord],
+  average_rel_abundance = asv_average_rel_abundance[ord],
+  asv_in_stifle = asv_in_stifle[ord],
+  asv_in_ab = asv_in_ab[ord]
+) %>%
+  left_join(tax, by = "ASV") %>%
+  dplyr::select(
+    ASV, average_rel_abundance, asv_in_stifle, asv_in_ab,
+    Phylum, Family, Order, Genus, Species, genus_species
+  )
+
+asvs_positive_samples
+
+top10_asvs <- asvs_positive_samples %>%
+  dplyr::slice_head(n = 10)  
+ 
+top10_asvs
+
+# total ASVs detected in each negative-control type
+total_asv_in_stifle <- sum(asv_in_stifle > 0, na.rm = TRUE)
+total_asv_in_ab <- sum(asv_in_ab > 0, na.rm = TRUE)
+  
+cat("Total ASV count in kit samples:", total_asv_in_stifle, "\n")
+cat("Total ASV count in air samples:", total_asv_in_ab, "\n")
+ 
+```
+
+## Top 10 Phyla
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+phy_df_1 <- psmelt(ps_rel_1) 
+
+tax <- as(tax_table(ps_rel_1), "matrix")
+family_names <- unique(na.omit(tax[, "Phylum"]))
+
+cat("Number of unique Phylum names:", length(family_names), "\n")
+
+ top10_phyla <- phy_df_1 %>%
+  dplyr::group_by(Sample, Phylum) %>%
+  # add up the ASV relative abundances per Phylum in each sample
+  dplyr::summarise(total_abundance = sum(Abundance, na.rm = TRUE), .groups = "drop") %>%
+   dplyr::group_by(Phylum) %>%
+   # get the mean relative abundance across all samples per Phylum
+  dplyr::summarise(mean_rel_abundance = mean(total_abundance, na.rm = TRUE), .groups = "drop") %>%
+  dplyr::arrange(dplyr::desc(mean_rel_abundance)) %>%
+  dplyr::slice_head(n = 10) %>%
+  dplyr::pull(Phylum)
+ 
+
+legend_order <- c(
+  "p__Ascomycota",
+  "p__Basidiomycota",
+  "p__Anthophyta",
+  "p__Eukaryota_phy_Incertae_sedis",
+  "p__Mortierellomycota",
+  "p__Mucoromycota",
+  "p__Chytridiomycota",
+  "p__Rozellomycota"
+)
+
+phylum_colors <- c(
+  "p__Ascomycota"                   = "#1b9e77",
+  "p__Basidiomycota"                = "#a6761d",
+  "p__Anthophyta"                   = "#7570b3",
+  "p__Eukaryota_phy_Incertae_sedis" = "yellow",
+  "p__Mortierellomycota"            = "#d95f02",
+  "p__Mucoromycota"                 = "#e7298a",
+  "p__Chytridiomycota"              = "#66a61e",
+  "p__Rozellomycota"= "red"
+)
+
+
+ 
+phy_df_2 <- phy_df_1 %>%
+  dplyr::group_by(Sample_Site, Sample, Phylum) %>%
+  dplyr::summarise(total_abundance = sum(Abundance, na.rm = TRUE), .groups = "drop") %>%
+   dplyr::group_by(Sample_Site, Phylum) %>%
+  dplyr::summarise(mean_rel_abundance = mean(total_abundance, na.rm = TRUE), .groups = "drop") %>%
+  dplyr::arrange(dplyr::desc(mean_rel_abundance)) 
+
+phy_df_2 <- phy_df_2[phy_df_2$Phylum %in% top10_phyla, ]
+
+phy_df_2$Phylum <- factor(phy_df_2$Phylum, levels = legend_order)
+
+ggplot(phy_df_2, aes(x = Sample_Site, y = mean_rel_abundance, fill = Phylum, group = Phylum)) +
+  ggtitle("Top 10 Phyla in Skin Samples") +
+  geom_col(position = "stack") +
+  scale_fill_manual(values = phylum_colors, breaks = legend_order, drop = FALSE) +
+  coord_cartesian(ylim = c(0, 1.0)) +
+  labs(x = "Sample Type", y = "Average relative abundance across samples", fill = "Phylum") +
+  
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  
+```
+
+ 
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE}
+ ## Family 
+tax <- as(tax_table(ps_rel_1), "matrix")
+family_names <- unique(na.omit(tax[, "Family"]))
+
+cat("Number of unique Family names:", length(family_names), "\n")
+
+ top10_phyla <- phy_df_1 %>%
+  dplyr::mutate(Family = dplyr::if_else(is.na(Family), "Unknown", Family)) %>%
+  dplyr::group_by(Sample, Family) %>%
+  # add up the ASV relative abundances per Family in each sample
+  dplyr::summarise(total_abundance = sum(Abundance, na.rm = TRUE), .groups = "drop") %>%
+   dplyr::group_by(Family) %>%
+   # get the mean relative abundance across all samples per Family
+  dplyr::summarise(mean_rel_abundance = mean(total_abundance, na.rm = TRUE), .groups = "drop") %>%
+  dplyr::arrange(dplyr::desc(mean_rel_abundance)) %>%
+  dplyr::slice_head(n = 10) %>%
+  dplyr::pull(Family)
+ 
+legend_order <- c(
+  "Staphylococcaceae",
+  "Unknown",
+  "Streptococcaceae",
+  "Neisseriaceae",
+  "Moraxellaceae",
+  "Pasteurellaceae",
+  "Corynebacteriaceae",
+  "Lactobacillaceae",
+  "Lachnospiraceae",
+  "Micrococcaceae"
+)
+
+phylum_colors <- c(
+  "Unknown" = "gray",
+  "Staphylococcaceae" = "#e7298a",
+  "Streptococcaceae" = "blue",
+  "Neisseriaceae" = "lightblue",
+  "Moraxellaceae" = "#a6761d",
+  "Corynebacteriaceae" = "yellow",
+  "Lactobacillaceae" = "darkgreen",
+  "Pasteurellaceae" = "orange",
+   "Lachnospiraceae" = "brown",
+  "Micrococcaceae" = "pink"
+)
+
+phy_df_2 <- phy_df_1 %>%
+  dplyr::mutate(Family = dplyr::if_else(is.na(Family), "Unknown", Family)) %>%
+  dplyr::group_by(Sample_Site, Sample, Family) %>%
+  dplyr::summarise(total_abundance = sum(Abundance, na.rm = TRUE), .groups = "drop") %>%
+  dplyr::group_by(Sample_Site, Family) %>%
+  dplyr::summarise(mean_rel_abundance = mean(total_abundance, na.rm = TRUE), .groups = "drop") %>%
+  dplyr::arrange(dplyr::desc(mean_rel_abundance))
+
+phy_df_2 <- phy_df_2 %>%
+  dplyr::filter(Family %in% top10_phyla)
+
+phy_df_2$Family <- factor(phy_df_2$Family, levels = legend_order)
+
+ggplot(phy_df_2, aes(x = Sample_Site, y = mean_rel_abundance, fill = Family)) +
+  ggtitle("Top 10 Families in Skin Samples") +
+  geom_col(position = "stack") +
+  scale_fill_manual(values = phylum_colors, breaks = legend_order, drop = FALSE) +
+  coord_cartesian(ylim = c(0, 1.0)) +
+  labs(x = "Sample Type", y = "Average relative abundance across samples", fill = "Family") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Species 
+```{r, message=FALSE, warning=FALSE, echo=TRUE} 
+tax <- as(tax_table(ps_rel_1), "matrix")
+
+no_species <- is.na(tax[, "Species"]) | tax[, "Species"] == "" | tax[, "Species"] == "NA"
+
+count_no_species <- sum(no_species, na.rm = TRUE)
+total_asvs <- nrow(tax)
+pct_no_species <- 100 * count_no_species / total_asvs
+
+cat("ASVs with no species assignment:", count_no_species, "\n")
+cat("Percentage with no species assignment:", round(pct_no_species, 2), "%\n")
+
+```
+
+
+ 
+ 
+```{r, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
+sessionInfo()
+```
+
