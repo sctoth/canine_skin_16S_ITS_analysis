@@ -52,6 +52,16 @@ ps <- phyloseq(
 
 new_ids <- paste0("ASV_", seq_len(ntaxa(ps)))
 
+# Save the ID-to-sequence mapping  
+asv_sequence_lookup <- tibble(
+  OTU = new_ids,
+  ASV_sequence = taxa_names(ps)
+)
+readr::write_csv(
+  asv_sequence_lookup,
+  "../01_input_files/ASV_tables/asv_sequence_lookup.csv"
+)
+
 tax <- as(tax_table(ps), "matrix")
 rownames(tax) <- new_ids
 tax <- cbind(
@@ -208,6 +218,7 @@ ps_negatives_rel_2 <- transform_sample_counts(ps_negatives_2, function(x) x / su
 
  
 ```
+
 
 ## Top 10 ASVs in Negative Samples
 ```{r, message=FALSE, warning=FALSE, echo=TRUE}
@@ -782,7 +793,39 @@ cat("Percentage with no species assignment:", round(pct_no_species, 2), "%\n")
 
 ```
 
+# Sequencing depth threshold 
+```{r, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
+library(tidyverse)
+library(scales)
 
+max_library_size <- 10000
+
+df <- tibble(
+  library_size = 10:max_library_size,
+  percent_variation = 100 / library_size
+)
+
+ggplot(df, aes(x = library_size, y = percent_variation)) +
+  geom_line(linewidth = 1, color = "#2C7FB8") +
+  scale_x_continuous(
+    breaks = seq(0, max_library_size, by = 10000),
+    labels = label_number(big.mark = ","),
+    expand = expansion(mult = c(0, 0.02))
+  ) +
+  scale_y_continuous(
+    limits = c(0, 10),
+    breaks = seq(0, 10, by = 1),
+    labels = label_percent(scale = 1),
+    expand = expansion(mult = c(0, 0.02))
+  ) +
+  labs(
+    x = "Read library size (log10)",
+    y = "Variation due to one different read",
+    title = "Distribution in % variation"
+  ) +
+  theme_classic(base_size = 13) +
+  scale_x_log10()
+```
  
  
 ```{r, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
