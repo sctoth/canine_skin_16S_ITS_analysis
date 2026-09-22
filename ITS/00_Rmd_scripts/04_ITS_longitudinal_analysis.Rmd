@@ -1195,6 +1195,8 @@ ggplot(paired_distances, aes(x = Day_Order, y = Bray_Distance)) +
   )
 ```
 
+
+ 
 ### BC: Admission vs. Timepoints per Sample_Site
 
 Model =  lmer(Bray_Distance ~ Day_Order*Sample_Site + (1 | Dog_ID) 
@@ -1963,7 +1965,7 @@ ggplot(alphadiv_plot_data_surg, aes(x = Day_Order, y = Shannon)) +
   ) +
   theme_minimal() +
   
-  stat_pvalue_manual(
+ stat_pvalue_manual(
     sig_df_surg,
     label = "label",
     xmin = "xmin",
@@ -1972,7 +1974,7 @@ ggplot(alphadiv_plot_data_surg, aes(x = Day_Order, y = Shannon)) +
     tip.length = 0.01,
     bracket.size = 0.5,
     size = 5
-  ) +
+ ) +
   theme(
     plot.title = element_text(size = 14, face = "bold"),
     axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
@@ -2017,6 +2019,459 @@ ggplot(alphadiv_plot_data_ctrl, aes(x = Day_Order, y = Shannon)) +
   )
 ```
  
+# Post-Hoc: Chlorhex vs. Skin Samples BC
+
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+# phyloseq object with all skin and chlorhex samples
+ps_1 <- readRDS("../01_input_files/phyloseq/ps_skin_negatives.rds")
+metadata <- as(sample_data(ps_1), "data.frame")
+ 
+# Normalize ASV read counts 
+ps_rel_1 <- transform_sample_counts(ps_1, function(x) x / sum(x))
+rel_abundance_vector <- as.numeric(
+  as(phyloseq::otu_table(ps_rel_1), "matrix")
+)
+
+# Generate bray-curtis distance matrix using ASV relative abundances
+bray_dist <- phyloseq::distance(ps_rel_1, method = "bray")
+bray_matrix <- as.matrix(bray_dist)
+
+# ordinate PCoA from full bray-curtis matrix 
+set.seed(100)
+
+bray_pcoa <- ordinate(ps_rel_1, method = "PCoA", distance =  bray_dist)
+
+p1 <- plot_ordination(ps_rel_1, bray_pcoa, color = "Sample_Site")
+
+
+p1 + ggtitle("PCoA of Bray-Curtis Dissimilarities", subtitle = "Ellipses encircle and color samples belonging to the same sample type.") +
+  geom_point(size = 1.5) + 
+  theme_bw() +
+  stat_ellipse(aes(fill = Sample_Site, group = Sample_Site), alpha = 0.2, geom = "polygon")
+  
+metadata <- as(sample_data(ps_rel_1), "data.frame")
+ 
+
+# PERMANOVA test 
+set.seed(100)
+adonis2(bray_matrix ~ Sample_Site, data = metadata, permutations = 999, by = "margin")  
+ 
+
+
+# Set timepoint order 
+day_levels <- c(
+  "Admission",
+  "Day 0a - Pre Surgery",
+  "Day 0b - Surgery",
+  "Day 0c - Post Surgery",
+  "Day 1",
+  "Day 3",
+  "Week 1",
+  "Week 2",
+  "Week 3",
+  "Week 4",
+  "Week 5",
+  "Week 6"
+)
+metadata$Day_Order <- factor(metadata$Day_Order, levels = day_levels)
+
+#Count skin samples across timepoints
+count_df <- metadata %>% 
+  dplyr::select(Day_Order, Sample_Site, Sample_Unique) %>% 
+  distinct() %>% 
+  group_by(Day_Order, Sample_Site) %>% 
+  summarise(n = n(), .groups = "drop")
+ 
+
+count_df$Day_Order <- factor(count_df$Day_Order, levels = day_levels)
+count_df$Sample_Site <- factor(count_df$Sample_Site, levels = c("Surgical", "Control", "Chlorhex", "Air", "Kit"))
+
+p <- ggplot(count_df, aes(x = Day_Order, y = n, fill = Sample_Site)) +
+  geom_col(position = position_dodge(width = 0.75), width = 0.75) +
+  geom_text(
+    aes(label = n),
+    position = position_dodge(width = 0.75),
+    vjust = -0.3,
+    size = 3.5
+  ) +
+  scale_fill_manual(values = c("Surgical" = "blue", "Control" = "purple", "Chlorhex" = "orange", "Kit" = "green", "Air" = "red")) +
+  labs(
+    x = "Timepoint",
+    y = "Number of Samples",
+    fill = "Skin Site"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right"
+  )
+
+print(p)
+ 
+
+# All Chlorhex samples 
+chlorhex_samples <- metadata %>%
+  filter(Sample_Site == "Chlorhex")
+ 
+# Dogs with associated chlorhex sample
+chlorhex_dogs <- chlorhex_samples %>%
+  distinct(Dog_ID) 
+
+
+paired_groups <- metadata %>%
+  filter(Sample_Site %in% c("Surgical", "Control")) %>%
+  filter(Day_Order %in% c("Admission", "Day 0a - Pre Surgery", "Day 0b - Surgery", "Day 0c - Post Surgery", "Day 1")) %>%
+  filter(Dog_ID %in% chlorhex_dogs$Dog_ID) 
+  #group_by(Individual) %>%
+  #summarize(n_sites = n_distinct(Day_Order), .groups = "drop") %>%
+ # filter(n_sites == 2)  
+
+# Dogs with associated chlorhex sample
+dogs_with_chlorhex <- paired_groups %>%
+  distinct(Dog_ID) 
+
+chlorhex_samples <- metadata %>%
+  filter(Sample_Site == "Chlorhex")%>%
+  filter(Dog_ID %in% dogs_with_chlorhex$Dog_ID) 
+
+# Combine
+metadata_final <- bind_rows(chlorhex_samples, paired_groups) %>%
+  arrange(Individual, Day_Order) 
+ 
+ 
+#Count skin samples across timepoints
+count_df <- metadata_final %>% 
+  dplyr::select(Day_Order, Sample_Site, Sample_Unique) %>% 
+  distinct() %>% 
+  group_by(Day_Order, Sample_Site) %>% 
+  summarise(n = n(), .groups = "drop")
+ 
+
+count_df$Day_Order <- factor(count_df$Day_Order, levels = day_levels)
+count_df$Sample_Site <- factor(count_df$Sample_Site, levels = c("Surgical", "Control", "Chlorhex"))
+
+p <- ggplot(count_df, aes(x = Day_Order, y = n, fill = Sample_Site)) +
+  geom_col(position = position_dodge(width = 0.75), width = 0.75) +
+  geom_text(
+    aes(label = n),
+    position = position_dodge(width = 0.75),
+    vjust = -0.3,
+    size = 3.5
+  ) +
+  scale_fill_manual(values = c("Surgical" = "blue", "Control" = "purple", "Chlorhex" = "orange")) +
+  labs(
+    x = "Timepoint",
+    y = "Number of Samples",
+    fill = "Skin Site"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right"
+  )
+
+print(p)
+```
+
+## Surgical Samples vs Chlorhex
+```{r,fig.width=11, fig.height=8,message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
+
+ metadata_final <- bind_rows(chlorhex_samples, paired_groups) %>%
+  arrange(Individual, Day_Order) %>%
+ filter(Sample_Site %in% c("Surgical", "Chlorhex"))  
+  
+ 
+# Prune phyloseq object so it only contains these remaining samples 
+ps_rel_2 <- prune_samples(metadata_final$SampleID, ps_rel_1)
+ 
+# Generate bray-curtis distance matrix using ASV relative abundances
+bray_dist <- phyloseq::distance(ps_rel_2, method = "bray")
+bray_matrix <- as.matrix(bray_dist)
+
+
+bray_arcsin_s <- asin(sqrt(bray_matrix))
+
+ 
+ # generate BC matrix where chlorhex samples compared to surgical samples across days within dogs  
+chlorhex_vs_all_same_site <- metadata_final %>%
+  group_by(Dog_ID) %>%
+  mutate(
+    Chlorhex_sample = SampleID[Day_Order == "Day 0b - Surgery"][1]
+  ) %>%
+  ungroup() %>%
+  filter(!is.na(Chlorhex_sample)) %>%
+  filter(SampleID != Chlorhex_sample) %>%
+  mutate(
+    Bray_Distance = mapply(function(ref, other) {
+      bray_arcsin_s[ref, other]
+    }, Chlorhex_sample, SampleID)
+  ) %>%
+  dplyr::select(Dog_ID, Sample_Site, Chlorhex_sample, SampleID, Day_Order,
+         Sample_Plate, Collection_Day, Bray_Distance)  
+ 
+
+
+# Random effects to account for per dog replicates
+lmer_bray <- lmer(
+  Bray_Distance ~ Day_Order + (1 | Dog_ID),
+  data = chlorhex_vs_all_same_site
+)
+
+anova(lmer_bray)
+summary(lmer_bray)
+ 
+ 
+# estimated marginal means of Day-Order within each site (control and surgical)
+emm <- emmeans(lmer_bray, ~ Day_Order)
+
+emm_df <- as.data.frame(emm)[, c("Day_Order",  "emmean", "SE", "df", "lower.CL", "upper.CL")]
+
+
+alpha <- 0.05
+ 
+contrasts <- as.data.frame(pairs(emm, adjust = "tukey"))
+
+contrasts <- contrasts %>%
+  mutate(
+    Group1 = case_when(
+      str_detect(contrast, "^\\(") ~ str_match(contrast, "^\\((.*?)\\)")[,2],
+      TRUE ~ str_match(contrast, "^(.*?) - ")[,2]
+    ),
+    Group2 = case_when(
+      str_detect(contrast, "\\) - \\(") ~ str_match(contrast, "- \\((.*?)\\)$")[,2],
+      str_detect(contrast, "^\\(") ~ str_replace(contrast, "^\\(.*?\\) - ", ""),
+      TRUE ~ str_match(contrast, "- (.*)$")[,2]
+    ),
+    Group1 = str_remove_all(str_trim(Group1), "[()]"),
+    Group2 = str_remove_all(str_trim(Group2), "[()]")
+  )
+
+pairwise_tidy <- contrasts %>%
+  filter(!is.na(p.value)) %>% 
+  mutate(
+    Significant = ifelse(p.value <= alpha, "Yes", "No"),
+    Stars = case_when(
+      p.value <= 0.001 ~ "***",
+      p.value <= 0.01  ~ "**",
+      p.value <= 0.05  ~ "*",
+      p.value <= 0.10 ~ ".",  
+      TRUE ~ ""
+    ),
+    p.value = round(p.value, 4) ) %>%
+  arrange(p.value) 
+
+# Filter out insignificant pairwise results
+sig_df <- pairwise_tidy %>%
+  filter(Significant == "Yes") %>%
+  mutate(
+    group1 = Group1,
+    group2 = Group2,
+    y.position = NA_real_,    
+    label = Stars
+  )
+x_levels <- levels(factor(chlorhex_vs_all_same_site$Day_Order))
+
+sig_df <- sig_df %>%
+  mutate(
+    xmin = match(group1, x_levels),
+    xmax = match(group2, x_levels)
+  ) %>%
+  arrange(p.value) %>%
+  mutate(
+    y.position = max(chlorhex_vs_all_same_site$Bray_Distance, na.rm = TRUE) +
+      seq(0.05, by = 0.05, length.out = n())
+  )
+ 
+ 
+
+p_surg <- ggplot(chlorhex_vs_all_same_site, aes(x = Day_Order, y = Bray_Distance)) +
+  coord_cartesian(ylim = c(0, 1.7)) +
+  geom_boxplot(fill = "#3399FF") +
+  geom_jitter(width = 0.15, alpha = 0.6, color = "black") +
+
+  geom_hline(yintercept = emm_df$emmean[1], linetype = "dashed", color="red") +
+  geom_point(data = emm_df, aes(x = Day_Order, y = emmean),
+             inherit.aes = FALSE, color = "darkblue", size = 3) +
+  geom_line(data = emm_df, aes(x = Day_Order, y = emmean, group = 1),
+            inherit.aes = FALSE, color = "darkblue", linewidth = 1) +
+
+  labs(
+    title = "Surgical-Site: BC Dissimilarity to Chlorhex",
+    subtitle = "Trend line indicating estimated marginal means per timepoint, horizontal red line indicates emmean of Admission",
+    x = "Timepoint",
+    y = "Bray-Curtis Dissimilarity to Chlorhex Sample"
+  ) +
+  theme_minimal() +
+ # stat_pvalue_manual(
+   # sig_df_surg,
+    #label = "label",
+    #xmin = "xmin",
+  #  xmax = "xmax",
+   # y.position = "y.position",
+   # tip.length = 0.01,
+  #  bracket.size = 0.5,
+   # size = 5
+  #) +
+    theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12)
+  ) +
+  coord_cartesian(ylim = c(0.3, 1.6)) 
+
+p_surg
+```
+
+## Control Samples vs Chlorhex
+```{r,fig.width=11, fig.height=8,message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
+
+metadata_final <- bind_rows(chlorhex_samples, paired_groups) %>%
+  arrange(Individual, Day_Order) %>%
+ filter(Sample_Site %in% c("Control", "Chlorhex"))  
+  
+ 
+# Prune phyloseq object so it only contains these remaining samples 
+ps_rel_2 <- prune_samples(metadata_final$SampleID, ps_rel_1)
+ 
+# Generate bray-curtis distance matrix using ASV relative abundances
+bray_dist <- phyloseq::distance(ps_rel_2, method = "bray")
+bray_matrix <- as.matrix(bray_dist)
+
+
+bray_arcsin_s <- asin(sqrt(bray_matrix))
+
+ 
+ # generate BC matrix where chlorhex samples compared to surgical samples across days within dogs  
+chlorhex_vs_all_same_site <- metadata_final %>%
+  group_by(Dog_ID) %>%
+  mutate(
+    Chlorhex_sample = SampleID[Day_Order == "Day 0b - Surgery"][1]
+  ) %>%
+  ungroup() %>%
+  filter(!is.na(Chlorhex_sample)) %>%
+  filter(SampleID != Chlorhex_sample) %>%
+  mutate(
+    Bray_Distance = mapply(function(ref, other) {
+      bray_arcsin_s[ref, other]
+    }, Chlorhex_sample, SampleID)
+  ) %>%
+  dplyr::select(Dog_ID, Sample_Site, Chlorhex_sample, SampleID, Day_Order,
+         Sample_Plate, Collection_Day, Bray_Distance)  
+ 
+
+
+# Random effects to account for per dog replicates
+lmer_bray <- lmer(
+  Bray_Distance ~ Day_Order + (1 | Dog_ID),
+  data = chlorhex_vs_all_same_site
+)
+
+anova(lmer_bray)
+summary(lmer_bray)
+ 
+ 
+# estimated marginal means of Day-Order within each site (control and surgical)
+emm <- emmeans(lmer_bray, ~ Day_Order)
+
+emm_df <- as.data.frame(emm)[, c("Day_Order",  "emmean", "SE", "df", "lower.CL", "upper.CL")]
+
+
+alpha <- 0.05
+ 
+contrasts <- as.data.frame(pairs(emm, adjust = "tukey"))
+
+contrasts <- contrasts %>%
+  mutate(
+    Group1 = case_when(
+      str_detect(contrast, "^\\(") ~ str_match(contrast, "^\\((.*?)\\)")[,2],
+      TRUE ~ str_match(contrast, "^(.*?) - ")[,2]
+    ),
+    Group2 = case_when(
+      str_detect(contrast, "\\) - \\(") ~ str_match(contrast, "- \\((.*?)\\)$")[,2],
+      str_detect(contrast, "^\\(") ~ str_replace(contrast, "^\\(.*?\\) - ", ""),
+      TRUE ~ str_match(contrast, "- (.*)$")[,2]
+    ),
+    Group1 = str_remove_all(str_trim(Group1), "[()]"),
+    Group2 = str_remove_all(str_trim(Group2), "[()]")
+  )
+
+pairwise_tidy <- contrasts %>%
+  filter(!is.na(p.value)) %>% 
+  mutate(
+    Significant = ifelse(p.value <= alpha, "Yes", "No"),
+    Stars = case_when(
+      p.value <= 0.001 ~ "***",
+      p.value <= 0.01  ~ "**",
+      p.value <= 0.05  ~ "*",
+      p.value <= 0.10 ~ ".",  
+      TRUE ~ ""
+    ),
+    p.value = round(p.value, 4) ) %>%
+  arrange(p.value) 
+
+# Filter out insignificant pairwise results
+sig_df <- pairwise_tidy %>%
+  filter(Significant == "Yes") %>%
+  mutate(
+    group1 = Group1,
+    group2 = Group2,
+    y.position = NA_real_,    
+    label = Stars
+  )
+x_levels <- levels(factor(chlorhex_vs_all_same_site$Day_Order))
+
+sig_df <- sig_df %>%
+  mutate(
+    xmin = match(group1, x_levels),
+    xmax = match(group2, x_levels)
+  ) %>%
+  arrange(p.value) %>%
+  mutate(
+    y.position = max(chlorhex_vs_all_same_site$Bray_Distance, na.rm = TRUE) +
+      seq(0.05, by = 0.05, length.out = n())
+  )
+ 
+ 
+
+p_control <- ggplot(chlorhex_vs_all_same_site, aes(x = Day_Order, y = Bray_Distance)) +
+  coord_cartesian(ylim = c(0, 1.7)) +
+  geom_boxplot(fill = "#CC99FF") +
+  geom_jitter(width = 0.15, alpha = 0.6, color = "black") +
+
+  geom_hline(yintercept = emm_df$emmean[1], linetype = "dashed", color="red") +
+  geom_point(data = emm_df, aes(x = Day_Order, y = emmean),
+             inherit.aes = FALSE, color = "darkblue", size = 3) +
+  geom_line(data = emm_df, aes(x = Day_Order, y = emmean, group = 1),
+            inherit.aes = FALSE, color = "darkblue", linewidth = 1) +
+
+  labs(
+    title = "Control-Site: BC Dissimilarity to Chlorhex",
+    subtitle = "Trend line indicating estimated marginal means per timepoint, horizontal red line indicates emmean of Admission",
+    x = "Timepoint",
+    y = "Bray-Curtis Dissimilarity to Chlorhex Sample"
+  ) +
+  theme_minimal() +
+ # stat_pvalue_manual(
+   # sig_df_surg,
+    #label = "label",
+    #xmin = "xmin",
+  #  xmax = "xmax",
+   # y.position = "y.position",
+   # tip.length = 0.01,
+  #  bracket.size = 0.5,
+   # size = 5
+  #) +
+    theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12)
+  ) +
+  coord_cartesian(ylim = c(0.3, 1.6)) 
+
+p_control
+```
+
+
  
 ```{r, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
 sessionInfo()

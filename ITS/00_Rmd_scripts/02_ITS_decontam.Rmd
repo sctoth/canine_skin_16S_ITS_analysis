@@ -354,8 +354,8 @@ sort(sample_metadata_subset$LibrarySize)[1:50]
 table(sample_metadata_subset$Sample_Site, sample_metadata_subset$NegativeControl)
 
 cat("Print which category (positive = FALSE or negative = TRUE) are the low depth samples (<2k reads) from")
-table(sample_metadata_subset$Sample_Site[sample_metadata_subset$LibrarySize < 700], 
-      sample_metadata_subset$NegativeControl[sample_metadata_subset$LibrarySize < 700])
+table(sample_metadata_subset$Sample_Site[sample_metadata_subset$LibrarySize < 2000], 
+      sample_metadata_subset$NegativeControl[sample_metadata_subset$LibrarySize < 2000])
 
 ps <- phyloseq(otu_table(ASV_feature_table_og, taxa_are_rows=FALSE), 
                sample_data(sample_metadata_subset), 
@@ -505,9 +505,9 @@ ggplot(sample_metadata.filt2, aes(x = rank(LibrarySize), y = LibrarySize, color 
 sort(sample_metadata.filt$LibrarySize)[1:30]
 table(sample_metadata.filt$Sample_Site, sample_metadata.filt$NegativeControl)
 
-cat("Print which category (positive = FALSE or negative = TRUE) are the low depth samples (<700 reads) from")
-table(sample_metadata.filt$Sample_Site[sample_metadata.filt$LibrarySize < 700], 
-      sample_metadata.filt$NegativeControl[sample_metadata.filt$LibrarySize < 700])
+cat("Print which category (positive = FALSE or negative = TRUE) are the low depth samples (<2000 reads) from")
+table(sample_metadata.filt$Sample_Site[sample_metadata.filt$LibrarySize < 2000], 
+      sample_metadata.filt$NegativeControl[sample_metadata.filt$LibrarySize < 2000])
 ```
 
 # Run Decontam Diagnostics: Combined method with sequencing run as batches 
@@ -558,9 +558,9 @@ sample_metadata_decontam$LibrarySize_pre_decontam <- rowSums(
 sort(sample_metadata_decontam$LibrarySize_pre_decontam)[1:30]
 table(sample_metadata_decontam$Sample_Site, sample_metadata_decontam$NegativeControl)
 
-cat("Print which category (positive = FALSE or negative = TRUE) are the low depth samples (<700 reads) from")
-table(sample_metadata_decontam$Sample_Site[sample_metadata_decontam$LibrarySize_pre_decontam < 700], 
-      sample_metadata_decontam$NegativeControl[sample_metadata_decontam$LibrarySize_pre_decontam < 700])
+cat("Print which category (positive = FALSE or negative = TRUE) are the low depth samples (<2000 reads) from")
+table(sample_metadata_decontam$Sample_Site[sample_metadata_decontam$LibrarySize_pre_decontam < 2000], 
+      sample_metadata_decontam$NegativeControl[sample_metadata_decontam$LibrarySize_pre_decontam < 2000])
 
 
 sample_metadata_decontam$LibrarySize_post_decontam <- rowSums(
@@ -570,12 +570,12 @@ sample_metadata_decontam$LibrarySize_post_decontam <- rowSums(
 sort(sample_metadata_decontam$LibrarySize_post_decontam)[1:30]
 table(sample_metadata_decontam$Sample_Site, sample_metadata_decontam$NegativeControl)
 
-cat("Print which category (positive = FALSE or negative = TRUE) are the low depth samples (<700 reads) from")
-table(sample_metadata_decontam$Sample_Site[sample_metadata_decontam$LibrarySize_post_decontam < 700], 
-      sample_metadata_decontam$NegativeControl[sample_metadata_decontam$LibrarySize_post_decontam < 700])
+cat("Print which category (positive = FALSE or negative = TRUE) are the low depth samples (<2000 reads) from")
+table(sample_metadata_decontam$Sample_Site[sample_metadata_decontam$LibrarySize_post_decontam < 2000], 
+      sample_metadata_decontam$NegativeControl[sample_metadata_decontam$LibrarySize_post_decontam < 2000])
 
 # Remove low-depth samples
-#keep_samples <- rownames(sample_metadata_decontam)[sample_metadata_decontam$LibrarySize_post_decontam >= 700]
+#keep_samples <- rownames(sample_metadata_decontam)[sample_metadata_decontam$LibrarySize_post_decontam >= 2000]
 #final_samples <- intersect(keep_samples, rownames(ASV_feature_table_decontam))
 #sample_metadata.filt_2 <- sample_metadata_decontam[final_samples, , drop = FALSE]
 #ASV_feature_table.filt_2 <- ASV_feature_table_decontam[final_samples, , drop = FALSE]

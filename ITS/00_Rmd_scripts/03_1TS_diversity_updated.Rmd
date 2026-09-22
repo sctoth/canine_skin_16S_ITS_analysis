@@ -5,6 +5,7 @@ date: "`r Sys.Date()`"
 output: 
   html_document:
     toc: true
+    toc_float: true
     theme: flatly
     highlight: tango
     code_folding: show
@@ -43,22 +44,42 @@ library(forcats)
 
 ## Create phyloseq objects
 ```{r, message=FALSE, warning=FALSE, echo=TRUE}
+
+getwd()
 load("../01_input_files/ASV_tables/decontam_allseqruns_filtered_canine_skin_microbiome.rda")
 ps <- phyloseq(
   otu_table(ASV_feature_table_decontam, taxa_are_rows = FALSE),
   sample_data(sample_metadata_decontam),
   tax_table(taxa_annotations_decontam)
 )
-
+ 
 new_ids <- paste0("ASV_", seq_len(ntaxa(ps)))
 
-tax <- as(tax_table(ps), "matrix")
-rownames(tax) <- new_ids
-tax <- cbind(
-  tax,
-  genus_species = paste(tax[, "Genus"], tax[, "Species"], sep = " ")
+
+# Save the ID-to-sequence mapping  
+asv_sequence_lookup <- tibble(
+  OTU = new_ids,
+  ASV_sequence = taxa_names(ps)
+)
+readr::write_csv(
+  asv_sequence_lookup,
+  "../01_input_files/ASV_tables/asv_sequence_lookup.csv"
 )
 
+
+tax <- as(tax_table(ps), "matrix")
+
+asv_sequences <- rownames(tax)
+
+rownames(tax) <- new_ids
+ 
+ 
+tax <- cbind(
+  tax, 
+  genus_species = paste(tax[, "Genus"], tax[, "Species"], sep = " "),
+  ASV_Sequence  = asv_sequences
+)
+ 
 otu <- as(otu_table(ps), "matrix")
 colnames(otu) <- new_ids
 
@@ -67,6 +88,31 @@ ps <- phyloseq(
   sample_data(ps),
   tax_table(tax)
 )
+
+
+sd <- as(sample_data(ps), "data.frame")
+
+# define healing stages
+sd <- sd %>%
+  mutate(
+    Time_Group = case_when(
+      Day_Order %in% c("Admission", "Day 0a - Pre Surgery") ~ "Before_Surgery",
+      Day_Order %in% c("Day 0c - Post Surgery")           ~ "Post_Surgery",
+      Day_Order %in% c("Day 1", "Day 3")                  ~ "Inflammation",
+      Day_Order %in% c("Week 1", "Week 2")                ~ "Proliferation",
+      Day_Order %in% c("Week 3", "Week 4", "Week 5", "Week 6")  ~ "Maturation", 
+      TRUE                                                 ~ NA_character_
+    ),
+    Time_Category = case_when(
+      Day_Order %in% c("Admission", "Day 0a - Pre Surgery") ~ "Before",
+      TRUE                                                  ~ "After"
+    )
+  )
+
+
+sd$Time_Group <- factor(sd$Time_Group, levels = c("Before_Surgery", "Post_Surgery", "Inflammation", "Proliferation", "Maturation"))
+  
+sample_data(ps) <- sample_data(sd)
 
 
 # Get reads and metadata per sample
@@ -124,9 +170,54 @@ by_ind <- aggregate(
 )
 
 print(by_ind)
+ 
+
 ```
 
-# Negative Controls Analysis
+# Skin + Negatives Analysis
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+ # remove ASVs uncharacterized phyla
+ps_skin_negatives_1 <- subset_taxa(
+  ps,
+  !is.na(Phylum) & !Phylum %in% c("", "uncharacterized")
+)
+
+ 
+unknown_asvs <- rownames(tax_table(ps_skin_negatives_1))[
+  is.na(tax_table(ps_skin_negatives_1)[, "Phylum"]) |
+    tax_table(ps_skin_negatives_1)[, "Phylum"] %in% c("", "uncharacterized")
+]
+ 
+# remove ASVs uncharacterized phyla
+ps_skin_negatives_1 <- subset_taxa(
+  ps_skin_negatives_1,
+  !is.na(Phylum) & !Phylum %in% c("", "uncharacterized")
+)
+ 
+
+low_depth_samples <- sample_sums(ps_skin_negatives_1)[sample_sums(ps_skin_negatives_1) < 2000]
+
+low_depth_samples
+
+# Remove low-depth samples
+ps_skin_negatives_2 <- prune_samples(sample_sums(ps_skin_negatives_1) >= 2000, ps_skin_negatives_1)
+
+summary(sample_sums(ps_skin_negatives_2))
+
+zero_samples <- sample_names(ps_skin_negatives_2)[sample_sums(ps_skin_negatives_2) == 0]
+
+zero_samples
+
+# Remove samples with all 0s (if applicable)
+ps_skin_negatives_2 <- prune_samples(sample_sums(ps_skin_negatives_2) > 0, ps_skin_negatives_2)
+
+out_dir <- "../01_input_files/phyloseq"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+saveRDS(ps_skin_negatives_2, file = file.path(out_dir, "ps_skin_negatives.rds"))
+```
+ 
+
+# Negatives-Only Analysis
 ```{r, message=FALSE, warning=FALSE, echo=TRUE}
 
 ps_negatives <- prune_samples(
@@ -183,7 +274,10 @@ data.frame(
   removed = c(n_asv_removed, reads_removed),
   percent_removed = c(pct_asv_removed, pct_reads_removed)
 )
+```
 
+## Remove low-depth samples
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
 low_depth_samples <- sample_sums(ps_negatives_1)[sample_sums(ps_negatives_1) < 2000]
 
 low_depth_samples
@@ -192,14 +286,6 @@ low_depth_samples
 ps_negatives_2 <- prune_samples(sample_sums(ps_negatives_1) >= 2000, ps_negatives_1)
 
 summary(sample_sums(ps_negatives_2))
-
-zero_samples <- sample_names(ps_negatives_2)[sample_sums(ps_negatives_2) == 0]
-
-zero_samples
-
-# Remove samples with all 0s (if applicable)
-ps_negatives_2 <- prune_samples(sample_sums(ps_negatives_2) > 0, ps_negatives_2)
-
  
 
 # Normalize read counts by dividing by total read count per sample (relative abundance) 
@@ -241,7 +327,7 @@ asvs_negative_samples <- tibble(
   left_join(tax, by = "ASV") %>%
   dplyr::select(
     ASV, average_rel_abundance, asv_in_kit, asv_in_air, asv_in_chlorhex,
-    Phylum, Family, Order, Genus, Species, genus_species
+    Phylum, Family, Order, Genus, Species, genus_species, ASV_Sequence
   )
 
 asvs_negative_samples
@@ -287,11 +373,11 @@ top10_phyla
 legend_order <- c(
   "p__Ascomycota",
   "p__Basidiomycota",
-  "p__Anthophyta",
-  "p__Eukaryota_phy_Incertae_sedis",
   "p__Mortierellomycota",
   "p__Mucoromycota",
-  "p__Chytridiomycota"
+  "p__Chytridiomycota",
+  "p__Anthophyta",
+  "p__Eukaryota_phy_Incertae_sedis"
 )
 
 phylum_colors <- c(
@@ -308,23 +394,40 @@ phylum_colors <- c(
 phy_df_2 <- ps_negatives_rel_2_df %>%
   dplyr::group_by(Sample_Site, Sample, Phylum) %>%
   dplyr::summarise(total_abundance = sum(Abundance, na.rm = TRUE), .groups = "drop") %>%
-   dplyr::group_by(Sample_Site, Phylum) %>%
-  dplyr::summarise(mean_rel_abundance = mean(total_abundance, na.rm = TRUE), .groups = "drop") %>%
-  dplyr::arrange(dplyr::desc(mean_rel_abundance)) 
+  dplyr::arrange(dplyr::desc(total_abundance)) 
 
 phy_df_2 <- phy_df_2[phy_df_2$Phylum %in% top10_phyla, ]
-
 phy_df_2$Phylum <- factor(phy_df_2$Phylum, levels = legend_order)
 
-ggplot(phy_df_2, aes(x = Sample_Site, y = mean_rel_abundance, fill = Phylum, group = Phylum)) +
-  ggtitle("Top 10 Phyla in Negative Samples") +
-  geom_col(position = "stack") +
-  scale_fill_manual(values = phylum_colors, breaks = legend_order, drop = FALSE) +
-  coord_cartesian(ylim = c(0, 1.0)) +
-  labs(x = "Sample Type", y = "Average relative abundance across samples", fill = "Phylum") +
-  
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))  
+# 1. Arrange and set factor levels so samples group correctly by site
+phy_df_2 <- phy_df_2 %>%
+  dplyr::arrange(Sample_Site, Sample) %>%
+  dplyr::mutate(Sample = factor(Sample, levels = unique(Sample)))
+
+# 2. Plot with hidden x-axis text and bottom-positioned facets
+ggplot(phy_df_2, aes(x = Sample, y = total_abundance, fill = Phylum)) + 
+  ggtitle("Top 10 Phyla in Negative Samples") + 
+  geom_col(position = "stack", width = 0.8) + # Slightly wider bars to fill space
+  scale_fill_manual(values = phylum_colors, breaks = legend_order, drop = FALSE) + 
+  coord_cartesian(ylim = c(0, 1.0)) + 
+  labs(x = "Sample Site", y = "Relative abundance across samples", fill = "Phylum") + 
+  theme_minimal() + 
+  theme(
+    # HIDES the individual sample ID labels entirely
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    
+    # Moves the facet label (Sample_Site) to the bottom of the chart
+    strip.placement = "outside",
+    strip.background = element_blank(),
+    strip.text = element_text(size = 10, face = "bold"),
+    
+    # Optional: adds a bit of visual separation between sites
+   # panel.spacing = unit(1, "lines") 
+  ) +
+  # strip.position = "bottom" forces the site names underneath the bars
+  facet_wrap(~Sample_Site, scales = "free_x", space = "free_x", strip.position = "bottom", nrow = 1)
+
 ```
  
 ```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE}
@@ -605,7 +708,7 @@ asvs_positive_samples <- tibble(
   left_join(tax, by = "ASV") %>%
   dplyr::select(
     ASV, average_rel_abundance, asv_in_stifle, asv_in_ab,
-    Phylum, Family, Order, Genus, Species, genus_species
+    Phylum, Family, Order, Genus, Species, genus_species, ASV_Sequence
   )
 
 asvs_positive_samples
@@ -622,7 +725,12 @@ total_asv_in_ab <- sum(asv_in_ab > 0, na.rm = TRUE)
 cat("Total ASV count in kit samples:", total_asv_in_stifle, "\n")
 cat("Total ASV count in air samples:", total_asv_in_ab, "\n")
  
+
+
 ```
+
+
+ 
 
 ## Top 10 Phyla
 ```{r, message=FALSE, warning=FALSE, echo=TRUE}
@@ -634,7 +742,7 @@ family_names <- unique(na.omit(tax[, "Phylum"]))
 cat("Number of unique Phylum names:", length(family_names), "\n")
 
  top10_phyla <- phy_df_1 %>%
-  dplyr::group_by(Sample, Phylum) %>%
+  dplyr::group_by(Dog_ID, Sample, Phylum) %>%
   # add up the ASV relative abundances per Phylum in each sample
   dplyr::summarise(total_abundance = sum(Abundance, na.rm = TRUE), .groups = "drop") %>%
    dplyr::group_by(Phylum) %>%
@@ -653,7 +761,8 @@ legend_order <- c(
   "p__Mortierellomycota",
   "p__Mucoromycota",
   "p__Chytridiomycota",
-  "p__Rozellomycota"
+  "p__Rozellomycota",
+  "Other"
 )
 
 phylum_colors <- c(
@@ -664,31 +773,51 @@ phylum_colors <- c(
   "p__Mortierellomycota"            = "#d95f02",
   "p__Mucoromycota"                 = "#e7298a",
   "p__Chytridiomycota"              = "#66a61e",
-  "p__Rozellomycota"= "red"
-)
+  "p__Rozellomycota"= "red",
+  "Other" = "gray")
 
 
  
 phy_df_2 <- phy_df_1 %>%
-  dplyr::group_by(Sample_Site, Sample, Phylum) %>%
+  dplyr::group_by(Dog_ID, Sample_Site, Sample, Phylum) %>%
   dplyr::summarise(total_abundance = sum(Abundance, na.rm = TRUE), .groups = "drop") %>%
-   dplyr::group_by(Sample_Site, Phylum) %>%
-  dplyr::summarise(mean_rel_abundance = mean(total_abundance, na.rm = TRUE), .groups = "drop") %>%
-  dplyr::arrange(dplyr::desc(mean_rel_abundance)) 
+  dplyr::arrange(dplyr::desc(total_abundance)) 
 
-phy_df_2 <- phy_df_2[phy_df_2$Phylum %in% top10_phyla, ]
+phy_df_2 <- phy_df_2 %>%
+  dplyr::mutate(Phylum = forcats::fct_other(
+    factor(Phylum, levels = legend_order),
+    keep = top10_phyla,
+    other_level = "Other"
+  ))
 
-phy_df_2$Phylum <- factor(phy_df_2$Phylum, levels = legend_order)
+# 1. Arrange and set factor levels so samples group correctly by site
+phy_df_2 <- phy_df_2 %>%
+  dplyr::arrange(Sample_Site, Dog_ID, Sample) %>%
+  dplyr::mutate(Sample = factor(Sample, levels = unique(Sample)))
 
-ggplot(phy_df_2, aes(x = Sample_Site, y = mean_rel_abundance, fill = Phylum, group = Phylum)) +
-  ggtitle("Top 10 Phyla in Skin Samples") +
-  geom_col(position = "stack") +
-  scale_fill_manual(values = phylum_colors, breaks = legend_order, drop = FALSE) +
-  coord_cartesian(ylim = c(0, 1.0)) +
-  labs(x = "Sample Type", y = "Average relative abundance across samples", fill = "Phylum") +
-  
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))  
+# 2. Plot with hidden x-axis text and bottom-positioned facets
+ggplot(phy_df_2, aes(x = Sample, y = total_abundance, fill = Phylum)) + 
+  ggtitle("Top 10 Phyla in Skin Samples") + 
+  geom_col(position = "stack", width = 1) + # Slightly wider bars to fill space
+  scale_fill_manual(values = phylum_colors, breaks = legend_order, drop = FALSE) + 
+  coord_cartesian(ylim = c(0, 1.0)) + 
+  labs(x = "Sample_Site", y = "Relative abundance across samples", fill = "Phylum") + 
+  theme_minimal() + 
+  theme(
+    # HIDES the individual sample ID labels entirely
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    
+    # Moves the facet label (Sample_Site) to the bottom of the chart
+    strip.placement = "outside",
+    strip.background = element_blank(),
+    strip.text = element_text(size = 10, face = "bold"),
+    
+    # Optional: adds a bit of visual separation between sites
+    panel.spacing = unit(1, "lines") 
+  ) +
+  # strip.position = "bottom" forces the site names underneath the bars
+  facet_wrap(~Sample_Site, scales = "free_x", space = "free_x", strip.position = "bottom", nrow = 1)
 ```
 
  
@@ -777,7 +906,320 @@ cat("Percentage with no species assignment:", round(pct_no_species, 2), "%\n")
 
 
  
+## Top ASVs in Skin Samples Analysis 
+```{r, message=FALSE, warning=FALSE, echo=TRUE} 
+# remove ASVs uncharacterized phyla
+ps_1 <- subset_taxa(
+  ps,
+  !is.na(Phylum) & !Phylum %in% c("", "uncharacterized")
+)
+
+# Remove low-depth samples
+ps_1 <- prune_samples(sample_sums(ps_1) >= 2000, ps_1)
+
+summary(sample_sums(ps_1))
  
+
+# Normalize read counts by dividing by total read count per sample (relative abundance) 
+ps_rel_1 <- transform_sample_counts(ps_1, function(x) x / sum(x))
+ 
+```
+
+### Skin vs Negative Control Samples
+```{r, fig.width=8, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
+ASV_rel_df <- psmelt(ps_rel_1) %>%
+arrange(Location_Type, Sample, OTU)
+
+ASV_rel_df_sig <- ASV_rel_df %>% 
+  #filter(Sample_Site %in% c("Control", "Surgical"))%>%
+  # filter(Location_Type %in% c("Skin"))%>%
+ #filter(Time_Group %in% c("Before_Surgery", "Post_Surgery"))%>%
+  filter(OTU %in% top10_asvs$ASV)  
+ 
+ASV_rel_df_sig
+
+ggplot(
+  ASV_rel_df_sig,
+  aes(
+    x = Location_Type,
+    y = Abundance,
+    fill = Location_Type 
+  )
+) +
+  geom_boxplot(
+    position = position_dodge(width = 0.75),
+    width = 0.65,
+    outlier.alpha = 0.6
+  ) +
+  geom_jitter(
+    aes(color = Location_Type),
+    position = position_jitterdodge(
+      jitter.width = 0.12,
+      dodge.width = 0.75
+    ),
+    size = 1.8,
+    alpha = 0.7
+  ) +
+  facet_wrap(~ OTU, scales = "free_y") +
+  scale_fill_manual(
+    values = c(
+      "Skin" = "brown",
+          "Chlorhex" = "orange",
+    "Blank" = "green",
+    "Air" = "red"
+    )
+  ) +
+  scale_color_manual(
+    values = c(
+      "Skin" = "brown",
+          "Chlorhex" = "orange",
+    "Blank" = "green",
+    "Air" = "red"
+    ),
+    guide = "none"
+  ) +
+  labs(
+    x = "Time group",
+    y = "Relative abundance",
+    fill = "Sample site",
+    title = "ITS ASV abundance by time group and sample site"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    strip.text = element_text(face = "bold"),
+    legend.position = "top"
+  )+ stat_summary(
+    fun = median,
+    geom = "point",
+    aes(group = Location_Type),
+    position = position_dodge(width = 0.75),
+    shape = 21,
+    size = 2,
+    stroke = 0.8,
+    fill = "white",
+    color = "black"
+  )
+  
+```
+
+### Abdomen vs Stifle 
+```{r, fig.width=8, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
+ASV_rel_df_sig <- ASV_rel_df %>% 
+   filter(Sample_Site %in% c("Surgical"))%>%
+   filter(Location_Type %in% c("Skin"))%>%
+ #filter(Time_Group %in% c("Before_Surgery", "Post_Surgery"))%>%
+  filter(OTU %in% top10_asvs$ASV)  
+ 
+ASV_rel_df_sig
+
+ggplot(
+  ASV_rel_df_sig,
+  aes(
+    x = Surgery_Type,
+    y = Abundance,
+    fill = Surgery_Type 
+  )
+) +
+  geom_boxplot(
+    position = position_dodge(width = 0.75),
+    width = 0.65,
+    outlier.alpha = 0.6
+  ) +
+  geom_jitter(
+    aes(color = Surgery_Type),
+    position = position_jitterdodge(
+      jitter.width = 0.12,
+      dodge.width = 0.75
+    ),
+    size = 1.8,
+    alpha = 0.7
+  ) +
+  facet_wrap(~ OTU, scales = "free_y") +
+  scale_fill_manual(
+    values = c(
+      "Abdomen" = "orange",
+          "Stifle" = "pink" 
+    )
+  ) +
+  scale_color_manual(
+    values = c(
+      "Abdomen" = "orange",
+          "Stifle" = "pink" 
+    ),
+    guide = "none"
+  ) +
+  labs(
+    x = "Surgery Type",
+    y = "Relative abundance",
+    fill = "Surgery Type",
+    title = "ITS ASV abundance: Stifle vs Abdomen Surgical Sites"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    strip.text = element_text(face = "bold"),
+    legend.position = "top"
+  )+ stat_summary(
+    fun = median,
+    geom = "point",
+    aes(group = Surgery_Type),
+    position = position_dodge(width = 0.75),
+    shape = 21,
+    size = 2,
+    stroke = 0.8,
+    fill = "white",
+    color = "black"
+  )
+  
+```
+
+### Skin Samples over time
+```{r, fig.width=8, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
+ASV_rel_df_sig <- ASV_rel_df %>% 
+   filter(Sample_Site %in% c("Control", "Surgical"))%>%
+   filter(Location_Type %in% c("Skin"))%>%
+ #filter(Time_Group %in% c("Before_Surgery", "Post_Surgery"))%>%
+  filter(OTU %in% top10_asvs$ASV)  
+ 
+ASV_rel_df_sig
+
+ggplot(
+  ASV_rel_df_sig,
+  aes(
+    x = Time_Group,
+    y = Abundance,
+    fill = Sample_Site 
+  )
+) +
+  geom_boxplot(
+    position = position_dodge(width = 0.75),
+    width = 0.65,
+    outlier.alpha = 0.6
+  ) +
+  geom_jitter(
+    aes(color = Sample_Site),
+    position = position_jitterdodge(
+      jitter.width = 0.12,
+      dodge.width = 0.75
+    ),
+    size = 1.8,
+    alpha = 0.7
+  ) +
+  facet_wrap(~ OTU, scales = "free_y") +
+  scale_fill_manual(
+    values = c(
+      "Control" = "purple",
+          "Surgical" = "blue" 
+    )
+  ) +
+  scale_color_manual(
+    values = c(
+      "Control" = "purple",
+          "Surgical" = "blue" 
+    ),
+    guide = "none"
+  ) +
+  labs(
+    x = "Healing Stage",
+    y = "Relative abundance",
+    fill = "Sample site",
+    title = "ITS ASV abundance by time group and sample site"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    strip.text = element_text(face = "bold"),
+    legend.position = "top"
+  )+ stat_summary(
+    fun = median,
+    geom = "point",
+    aes(group = Sample_Site),
+    position = position_dodge(width = 0.75),
+    shape = 21,
+    size = 2,
+    stroke = 0.8,
+    fill = "white",
+    color = "black"
+  )
+  
+```
+
+### Interested ASVs: Skin Samples over time
+```{r, fig.width=8, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
+ASV_rel_df_sig <- ASV_rel_df %>% 
+   filter(Sample_Site %in% c("Control", "Surgical"))%>%
+   filter(Location_Type %in% c("Skin"))%>%
+  filter(OTU %in% c("ASV_1", "ASV_7", "ASV_8", "ASV_9"))%>%
+ #filter(Time_Group %in% c("Before_Surgery", "Post_Surgery"))%>%
+  filter(OTU %in% top10_asvs$ASV) %>%
+  group_by(Dog_ID) %>%
+  filter(all(c("Control", "Surgical") %in% Sample_Site)) %>%
+  ungroup()
+ 
+ASV_rel_df_sig
+
+ggplot(
+  ASV_rel_df_sig,
+  aes(
+    x = Time_Group,
+    y = Abundance,
+    fill = Sample_Site 
+  )
+) +
+  geom_boxplot(
+    position = position_dodge(width = 0.75),
+    width = 0.65,
+    outlier.alpha = 0.6
+  ) +
+  geom_jitter(
+    aes(color = Sample_Site),
+    position = position_jitterdodge(
+      jitter.width = 0.12,
+      dodge.width = 0.75
+    ),
+    size = 1.8,
+    alpha = 0.7
+  ) +
+  facet_wrap(~ OTU, scales = "free_y") +
+  scale_fill_manual(
+    values = c(
+      "Control" = "purple",
+          "Surgical" = "blue" 
+    )
+  ) +
+  scale_color_manual(
+    values = c(
+      "Control" = "purple",
+          "Surgical" = "blue" 
+    ),
+    guide = "none"
+  ) +
+  labs(
+    x = "Healing Stage",
+    y = "Relative abundance",
+    fill = "Sample site",
+    title = "ITS ASV abundance by time group and sample site"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    strip.text = element_text(face = "bold"),
+    legend.position = "top"
+  )+ stat_summary(
+    fun = median,
+    geom = "point",
+    aes(group = Sample_Site),
+    position = position_dodge(width = 0.75),
+    shape = 21,
+    size = 2,
+    stroke = 0.8,
+    fill = "white",
+    color = "black"
+  )
+  
+```
+
 ```{r, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
 sessionInfo()
 ```
