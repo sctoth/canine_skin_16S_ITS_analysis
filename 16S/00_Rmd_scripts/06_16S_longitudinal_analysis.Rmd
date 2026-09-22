@@ -975,7 +975,6 @@ ggplot(metadata_surg, aes(x = Day_Order, y = pc1)) +
 ```
 
  
- 
 ## LMM  
 
 The pairwise Bray-Curtis distances were transformed to improve normality before LMM analysis. An arcsine transformation was ultimately selected, after evaluating eight potential transformations, including log, square-root and arcsine of the original distance values. Normality of the transformed data was assessed using the Anderson–Darling test, and the transformation with the lowest Anderson–Darling statistic was chosen. 
@@ -1208,6 +1207,7 @@ print(sig_df)
  
 
 ggplot(paired_distances, aes(x = Day_Order, y = Bray_Distance)) +
+  coord_cartesian(ylim = c(0, 1.7)) +
   geom_boxplot(fill = "lightblue", alpha = 0.8) +
   geom_jitter(width = 0.15, alpha = 0.5, color = "black") +
 
@@ -1387,6 +1387,7 @@ admission_vs_all_same_site_surg <-  admission_vs_all_same_site %>%
 print(sig_df_surg)
 
 ggplot(admission_vs_all_same_site_surg, aes(x = Day_Order, y = Bray_Distance)) +
+  coord_cartesian(ylim = c(0, 1.7)) +
   geom_boxplot(fill = "#3399FF") +
   geom_jitter(width = 0.15, alpha = 0.6, color = "black") +
 
@@ -1431,6 +1432,7 @@ admission_vs_all_same_site_ctrl <-  admission_vs_all_same_site %>%
   filter(Sample_Site == "Control")
 
 ggplot(admission_vs_all_same_site_ctrl, aes(x = Day_Order, y = Bray_Distance)) +
+  coord_cartesian(ylim = c(0, 1.7)) +
   geom_boxplot(fill = "#CC99FF") +
   geom_jitter(width = 0.15, alpha = 0.6, color = "black") +
 

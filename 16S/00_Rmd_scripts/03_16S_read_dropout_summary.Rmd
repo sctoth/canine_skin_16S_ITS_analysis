@@ -5,6 +5,7 @@ date: "`r Sys.Date()`"
 output: 
   html_document:
     toc: true
+    toc_float: true
     theme: flatly
     highlight: tango
     code_folding: show
@@ -12,7 +13,6 @@ output:
 ---
 
 ```{r setup, include=FALSE}
-# Load libraries
 library(ggplot2)
 library(dplyr)
 library(tidyr)
@@ -26,9 +26,8 @@ library(purrr)
 library(cowplot)
 ```
 
-# Read-Dropout QC  
+# Sample libraries: Read drop-out
 ```{r summary-table-individual, echo=TRUE}
- 
 all_data <- read.csv("../01_input_files/csv_files/seqruns_final_summary_read_counts.csv")
 sample_metadata_og <- read.delim("../../metadata/01_input_files/CH-All_16S_Metadata_20220124.tsv", header=TRUE)
 
@@ -56,20 +55,6 @@ all_data <- all_data %>%
     by = c("Sample" = "Sample_Unique")
   )
 
-ggplot(all_data, aes(x = Total_Reads, y = Truncated_Reads)) +
-  geom_point(size = 2.5, alpha = 0.8, color = "#2C7FB8") +
-  scale_y_continuous(labels = comma) +
-  labs(
-    x = "Total_Reads",
-    y = "Truncated_Reads",
-    title = "Truncated_Reads per sample"
-  ) +
-  theme_classic() +
-  theme(
-    axis.text.y = element_text(size = 7),
-    plot.title = element_text(face = "bold")
-  )
- 
 
 summary_by_run <- all_data %>%
   group_by(Sample_Plate) %>%
@@ -140,7 +125,22 @@ kable(
   column_spec(2, border_right = TRUE)%>%
   column_spec(9, border_right = TRUE)
 ```
-
+```{r read-library-size, fig.height=11, fig.width=8, echo=TRUE, eval=FALSE}
+ggplot(all_data, aes(x = Total_Reads, y = Truncated_Reads)) +
+  geom_point(size = 2.5, alpha = 0.8, color = "#2C7FB8") +
+  scale_y_continuous(labels = comma) +
+  labs(
+    x = "Total_Reads",
+    y = "Truncated_Reads",
+    title = "Truncated_Reads per sample"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.y = element_text(size = 7),
+    plot.title = element_text(face = "bold")
+  )
+```
+ 
 # Read Loss (%) per Sample
 ```{r sample-read-loss, fig.height=11, fig.width=8, echo=TRUE}
  cat_order <- c(
@@ -220,14 +220,14 @@ summary_df <- plot_data %>%
     max_val = max(Read_Loss_Pct, na.rm = TRUE),
     label = paste0(
     # "n=", n(), "\n",
-      "Mean: ", round(mean_val, 1), "%\n",
      "Median: ", round(median_val, 1), "%\n",
+#      "Mean: ", round(mean_val, 1), "%\n", 
       "Min: ", round(min_val, 1), "%\n",
       "Max: ", round(max_val, 1), "%"
     ),
     .groups = "drop"
   ) %>%
-  mutate(y = 80)
+  mutate(y = 60)
 
 ggplot(plot_data, aes(x = Category, y = Read_Loss_Pct, fill = Category)) +
   geom_boxplot(alpha = 0.8, width = 0.6) +
@@ -259,12 +259,52 @@ ggplot(plot_data, aes(x = Category, y = Read_Loss_Pct, fill = Category)) +
     axis.title = element_text(size = 12),
     plot.title = element_text(size = 13),
     panel.grid.minor = element_blank()
+  )  
+
+ 
+library(ggridges)
+
+ggplot(plot_data, aes(x = Read_Loss_Pct, fill = Category)) +
+  geom_histogram(bins = 30, alpha = 0.8, color = "white") +
+  geom_label(
+    data = summary_df,
+    aes(x = y, y = Inf, label = label),
+    inherit.aes = FALSE,
+    size = 3.5,
+    label.size = 0.3,
+    fill = "white",
+    alpha = 0.9,
+    vjust = 1.2
+  ) + 
+  facet_grid(Category ~ ., labeller = as_labeller(label_map), switch = "y") +
+  scale_fill_manual(values = colors, guide = "none") +
+  scale_x_continuous(
+    limits = c(0, 100),
+    breaks = seq(0, 100, by = 10),
+    expand = expansion(mult = c(0, 0.02))
+  ) +
+  coord_cartesian(ylim = c(0, 150)) +
+  labs(
+    y = "Number of samples",
+    x = "Read Loss (%)",
+    title = "Read Loss by Processing Step Across Samples"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(size = 10),
+    axis.title = element_text(size = 12),
+    plot.title = element_text(size = 13),
+    panel.grid.minor = element_blank(),
+    strip.placement = "outside",
+    strip.text.y.left = element_text(angle = 0, size = 10),
+    panel.spacing = unit(0.6, "lines")
   )
 ```
 
+ 
+```{r individual-read-loss, fig.height=11, fig.width=8, echo=FALSE, eval=FALSE}
 # Read Loss (%) per Individual 
-```{r individual-read-loss, fig.height=11, fig.width=8, echo=TRUE}
-
 summary_by_ind <- all_data %>%
   group_by(Individual) %>%
   summarise(

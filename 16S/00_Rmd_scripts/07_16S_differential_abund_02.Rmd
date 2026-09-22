@@ -15,7 +15,7 @@ output:
 Identify bacterial taxa at the genus and ASV levels that differ between surgical and control groups from baseline (Admission and Pre-Surgery Day 0) to the immediate post-surgery timepoint.
 
 **Overview:**
-Taxa present in at least 25% of surgical samples across the pre- and post-surgery timepoints were retained for analysis. For each of the dogs, paired relative abundances before and immediately after surgery were compared using Wilcoxon signed-rank tests.
+Taxa present in at least 35% of surgical samples across the pre- and post-surgery timepoints were retained for analysis. For each of the dogs, paired relative abundances before and immediately after surgery were compared using Wilcoxon signed-rank tests.
 
 For taxa with q-values ≤0.10, effect sizes were calculated as the paired Wilcoxon location-shift estimate (i.e., the estimated median difference in relative abundance between timepoints). These results were visualized in a heatmap using the signed significance score: sign(estimate) * -log10(p.value). The same set of significant taxa was subsequently tested using paired Wilcoxon signed-rank tests to compare baseline with later healing-stage timepoints.
 
@@ -267,8 +267,8 @@ run_paired_wilcoxon_by_genus <- function(
 Distribution of taxa at different prevalence thresholds
 ```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE} 
 # Define the two paired time groups
-Time_Group_1 <- "Before_Surgery"
-Time_Group_2 <- "Post_Surgery"
+Time_Group_2 <- "Before_Surgery"
+Time_Group_1 <- "Maturation"
 
 time_groups <- c(Time_Group_1, Time_Group_2)
 
@@ -336,7 +336,7 @@ threshold_results <- tibble(
 ```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE} 
 # Define the two paired time groups
 Time_Group_1 <- "Before_Surgery"
-Time_Group_2 <- "Post_Surgery"
+Time_Group_2 <- "Maturation"
 
 time_groups <- c(Time_Group_1, Time_Group_2)
 
@@ -563,7 +563,7 @@ results_wt_annotated_prolif
 
 # Define the two paired time groups
 Time_Group_1 <- "Before_Surgery"
-Time_Group_2 <- "Maturation"
+Time_Group_2 <- "Post_Surgery"
 
 time_groups <- c(Time_Group_1, Time_Group_2)
 
@@ -678,20 +678,23 @@ col_dend <- dendextend::rotate(
   order = timepoint_order
 )
 
+heatmap_matrix <- heatmap_matrix[, timepoint_order]
+
 ht <- ComplexHeatmap::Heatmap(
   heatmap_matrix,
   name = "Signed\n-log10(p)",
   col = col_fun,
 
   cluster_rows = TRUE,
-  cluster_columns = col_dend,
+ # cluster_columns = col_dend,
+  cluster_columns = FALSE,
   column_dend_reorder = FALSE,
 
   clustering_distance_rows = "euclidean",
   clustering_method_rows = "complete",
 
   na_col = "grey90",
-  column_title = "Differentially Significant Genera in Surgical Groups",
+  column_title = "Differentially Significant Genera in Surgical Groups (Relative to Maturation)",
   row_title = "Genus",
   row_names_side = "right",
   row_names_gp = grid::gpar(fontsize = 7)
@@ -1013,16 +1016,19 @@ col_dend <- dendextend::rotate(
   order = timepoint_order
 )
 
+heatmap_matrix <- heatmap_matrix[, timepoint_order]
+
 # Reorder matrix rows explicitly
 heatmap_matrix_ordered <- heatmap_matrix[row_names_in_heatmap_order, , drop = FALSE]
 
+heatmap_matrix <- heatmap_matrix[, timepoint_order]
 ht <- ComplexHeatmap::Heatmap(
   heatmap_matrix_ordered,
   name = "Signed\n-log10(p)",
   col = col_fun,
 
   cluster_rows = FALSE,
- cluster_columns = col_dend,
+ cluster_columns = FALSE,
   column_dend_reorder = FALSE,
 
   na_col = "grey90",
@@ -1123,7 +1129,7 @@ avg_depth <- mean(sample_sums(ps_genus))
 genus_df_sub <- genus_df %>%
   filter(Genus %in% significant_genera_2)%>%
   filter(
-    Time_Group %in% c("Before_Surgery", "Post_Surgery")
+    Time_Group %in% c("Before_Surgery", "Maturation")
   )
  # Check for genus-level (each sample should have one row for each Genus, if multiple appear then it is still at ASV-level)
 check <- genus_df_sub %>%
@@ -1159,7 +1165,7 @@ ps_genus_tss_log_df <- psmelt(ps_genus_tss_log)
 genus_clr_df_sub <- ps_genus_tss_log_df %>%
   filter(Genus %in% significant_genera_2)%>%
   filter(
-    Time_Group %in% c("Before_Surgery", "Post_Surgery")
+    Time_Group %in% c("Before_Surgery", "Maturation")
   )
  
 
