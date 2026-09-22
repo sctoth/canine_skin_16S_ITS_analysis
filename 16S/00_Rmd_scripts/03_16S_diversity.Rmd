@@ -5,6 +5,7 @@ date: "`r Sys.Date()`"
 output: 
   html_document:
     toc: true
+    toc_float: true
     theme: flatly
     highlight: tango
     code_folding: show
@@ -158,6 +159,10 @@ print(by_ind)
 ```
 
 # Skin + Negative Samples
+
+## ASV-Filtering 
+
+### Remove uncharacterized Phyla
 ```{r, message=FALSE, warning=FALSE, echo=TRUE}
  # remove ASVs uncharacterized phyla
 ps_skin_negatives_1 <- subset_taxa(
@@ -180,8 +185,10 @@ ps_skin_negatives_1 <- subset_taxa(
 low_depth_samples <- sample_sums(ps_skin_negatives_1)[sample_sums(ps_skin_negatives_1) < 2000]
 
 low_depth_samples
+```
 
-# Remove low-depth samples
+### Remove low-depth samples
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
 ps_skin_negatives_2 <- prune_samples(sample_sums(ps_skin_negatives_1) >= 2000, ps_skin_negatives_1)
 
 summary(sample_sums(ps_skin_negatives_2))
@@ -191,7 +198,7 @@ dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 saveRDS(ps_skin_negatives_2, file = file.path(out_dir, "ps_skin_negatives.rds"))
 ```
 
-# Negative Controls Analysis
+# Negative-Control Samples
 ```{r, message=FALSE, warning=FALSE, echo=TRUE}
 
 ps_negatives <- prune_samples(
@@ -442,7 +449,7 @@ cat("Percentage with no species assignment:", round(pct_no_species, 2), "%\n")
 ```
 
  
-# Skin (Positive) Samples Analysis
+# Skin Samples  
 
 ## ASV-Filtering 
 
@@ -728,123 +735,14 @@ cat("Percentage with no species assignment:", round(pct_no_species, 2), "%\n")
 
 ```
  
-```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE}
-
-# Sequencing depth threshold 
-library(tidyverse)
-library(scales)
-
-max_library_size <- 10000
-
-df <- tibble(
-  library_size = 10:max_library_size,
-  percent_variation = 100 / library_size
-)
-
-ggplot(df, aes(x = library_size, y = percent_variation)) +
-  geom_line(linewidth = 1, color = "#2C7FB8") +
-  scale_x_continuous(
-    breaks = seq(0, max_library_size, by = 10000),
-    labels = label_number(big.mark = ","),
-    expand = expansion(mult = c(0, 0.02))
-  ) +
-  scale_y_continuous(
-    limits = c(0, 10),
-    breaks = seq(0, 10, by = 1),
-    labels = label_percent(scale = 1),
-    expand = expansion(mult = c(0, 0.02))
-  ) +
-  labs(
-    x = "Read library size (log10)",
-    y = "Variation due to one different read",
-    title = "Distribution in % variation"
-  ) +
-  theme_classic(base_size = 13) +
-  scale_x_log10()
-```
- 
- 
+  
 
 # Skin vs. Negative Control Analysis
-```{r, fig.width=8, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
-ASV_rel_df <- psmelt(ps_rel_1) %>%
-arrange(Location_Type, Sample, OTU)
-
-ASV_rel_df_sig <- ASV_rel_df %>% 
-  #filter(Sample_Site %in% c("Control", "Surgical"))%>%
-  # filter(Location_Type %in% c("Skin"))%>%
- #filter(Time_Group %in% c("Before_Surgery", "Post_Surgery"))%>%
-  filter(OTU %in% top10_asvs$ASV)  
  
-ASV_rel_df_sig
-
-ggplot(
-  ASV_rel_df_sig,
-  aes(
-    x = Location_Type,
-    y = Abundance,
-    fill = Location_Type 
-  )
-) +
-  geom_boxplot(
-    position = position_dodge(width = 0.75),
-    width = 0.65,
-    outlier.alpha = 0.6
-  ) +
-  geom_jitter(
-    aes(color = Location_Type),
-    position = position_jitterdodge(
-      jitter.width = 0.12,
-      dodge.width = 0.75
-    ),
-    size = 1.8,
-    alpha = 0.7
-  ) +
-  facet_wrap(~ OTU, scales = "free_y") +
-  scale_fill_manual(
-    values = c(
-      "Skin" = "brown",
-          "Chlorhex" = "orange",
-    "Blank" = "green",
-    "Air" = "red"
-    )
-  ) +
-  scale_color_manual(
-    values = c(
-      "Skin" = "brown",
-          "Chlorhex" = "orange",
-    "Blank" = "green",
-    "Air" = "red"
-    ),
-    guide = "none"
-  ) +
-  labs(
-    x = "Time group",
-    y = "Relative abundances",
-    fill = "Sample site",
-    title = "16S ASV abundance by time group and sample site"
-  ) +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
-    strip.text = element_text(face = "bold"),
-    legend.position = "top"
-  )+ stat_summary(
-    fun = median,
-    geom = "point",
-    aes(group = Location_Type),
-    position = position_dodge(width = 0.75),
-    shape = 21,
-    size = 2,
-    stroke = 0.8,
-    fill = "white",
-    color = "black"
-  )
-  
-```
-
 ```{r, fig.width=8, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
-ASV_rel_df <- psmelt(ps_rel_1) %>%
+# Normalization using relative abundances
+ps_skin_negatives_2 <- transform_sample_counts(ps_skin_negatives_2, function(x) x / sum(x))
+ASV_rel_df <- psmelt(ps_skin_negatives_2) %>%
 arrange(Location_Type, Sample, OTU)
 
 ASV_rel_df_sig <- ASV_rel_df %>% 

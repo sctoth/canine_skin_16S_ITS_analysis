@@ -13,7 +13,8 @@ output:
 ---
 
 **Purpose:**
-  Run decontam R package to remove flagged contaminants, using "combined" method which incorporates negative controls and initial DNA concentrations. 
+  1. ASVs found in >= 10% of positive samples OR >=0.01% of total reads
+  2. Run decontam R package to remove flagged contaminants, using "combined" method which incorporates negative controls and initial DNA concentrations. 
   
 **Resources**
  1. Curation of reads and ASVs https://benjjneb.github.io/FelineBileManuscript/Analyses/FelineBile_Curate.html  
@@ -266,7 +267,7 @@ dog_library_table_bold
 ```
 
 
-```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=FALSE, results='hide'}
+```{r, fig.width=11, fig.height=8, message=FALSE, warning=FALSE, echo=TRUE}
 # Distribution of sample DNA concentrations for each sequencing run 
 ggplot(sample_metadata_subset, aes(x = raw_DNA_conc, fill = Sample_Plate)) + 
   geom_histogram(bins = 15, alpha = 0.7, position = "identity", color = "black") + 
@@ -401,7 +402,6 @@ ggplot(data=df.asv, aes(x=Prevalence.Pos, y=Abundance.Pos)) + geom_point(size = 
 
 
 # Initial ASV-filtering   
-ASVs found in >= 10% of positive samples OR >=0.01% of total reads
 ```{r, message=FALSE, warning=FALSE, echo=TRUE}
 postive_samples <- nrow((ASV_feature_table_og)[!sample_metadata_subset$NegativeControl, ])
 cat(paste0("Number of positive samples: ", postive_samples, "\n"))
@@ -440,7 +440,7 @@ print(paste("% of Total Reads from ASVs found in at least", prevalence_threshold
 (sum(ASV_feature_table.filt)/sum(ASV_feature_table_og))*100
 ```
 
-## Filter metadata and taxa tables according to new ASV table
+## Filter metadata and taxa tables 
 ```{r, message=FALSE, warning=FALSE, echo=TRUE, eval=TRUE}
 # Subset metadata and taxa table 
 sample_metadata.filt <- sample_metadata_subset[match(rownames(ASV_feature_table.filt), rownames(sample_metadata_subset)), ]
@@ -539,8 +539,7 @@ cat("Number of contaminants (method = prevalence, threshold = 0.1):", sum(contam
 
 ``` 
 
-
-Remove contaminant ASVs  
+## Remove contaminant ASVs  
 ```{r, message=FALSE, warning=FALSE, echo=TRUE}
 
 # Remove contaminants

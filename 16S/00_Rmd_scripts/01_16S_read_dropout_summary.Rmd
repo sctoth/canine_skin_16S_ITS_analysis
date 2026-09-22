@@ -26,7 +26,7 @@ library(purrr)
 library(cowplot)
 ```
 
-# Sample libraries: Read drop-out
+# Sample libraries 
 ```{r summary-table-individual, echo=TRUE}
 all_data <- read.csv("../01_input_files/csv_files/seqruns_final_summary_read_counts.csv")
 sample_metadata_og <- read.delim("../../metadata/01_input_files/CH-All_16S_Metadata_20220124.tsv", header=TRUE)
